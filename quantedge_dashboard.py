@@ -236,18 +236,29 @@ st.markdown(f"""
 import json, os
 
 DEFAULT_TICKERS = [
-    'NVDA', 'ASML.AS', 'MSFT', 'AMD', 'TSLA', 'ARM', 'SAP', 'CSCO', 'MU',
-    'ADYEN.AS', 'ZTS', 'BAYN.DE', 'JNJ', 'ABBV', 'OR.PA', 'PG', 'PEP',
-    'AD.AS', 'KO', 'MCD', 'WMT', 'UNA.AS', 'O', 'JPM', 'ADP', 'V',
-    'GLD', 'SLV', 'USO', 'FCX', 'CAT', 'WM', 'LOW', 'COST'
+    "NVDA", "ASML.AS", "MSFT", "AMD", "TSLA", "ARM", "SAP", "CSCO", "MU",
+    "ADYEN.AS", "ZTS", "BAYN.DE", "JNJ", "ABBV", "OR.PA", "PG", "PEP",
+    "AD.AS", "KO", "MCD", "UNA.AS", "O", "JPM", "ADP", "V",
+    "GLD", "SLV", "USO", "FCX", "CAT", "WM", "LOW", "COST",
+    "TRMB", "COTY", "SITE", "CMCSA", "FMC", "COIN", "INTU", "KR", "HPQ",
+    "PFE", "MRNA", "ILMN", "NKE", "SBUX", "CRWD", "PANW", "CRM",
+    "MA", "PYPL", "AMZN", "NFLX", "DIS", "LMT", "RTX",
+    "XOM", "CVX", "ALB", "NEM", "GOLD", "FDX", "UPS",
+    "MAERSK-B.CO", "SHELL.AS", "RHM.DE", "MC.PA", "WMT.DE",
+    "EME", "EQT", "ESRT",
 ]
 
 DEFAULT_WATCHLIST = {
-    'ADYEN.AS': 'Fintech Europa',
-    'ASML.AS':  'Chip Lithography',
-    'NVDA':     'AI GPU Leader',
-    'TSLA':     'EV / Energy',
-    'ARM':      'Chip Architecture',
+    "MCD":  "MCD",
+    "AMZN": "alles",
+    "RTX":  "defensie",
+    "TRMB": "defensie",
+    "ALB":  "ALB",
+    "CEG":  "CEG",
+    "DVN":  "DVN",
+    "EME":  "EME",
+    "EQT":  "EQT",
+    "ESRT": "ESRT",
 }
 
 # Probeer lokaal JSON-bestand (werkt thuis, niet op cloud)
