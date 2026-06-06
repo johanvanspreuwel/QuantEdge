@@ -1865,7 +1865,61 @@ with main_tabs[0]:
             pass
 
         st.markdown("<br>", unsafe_allow_html=True)
-        st.dataframe(style_main_table(main_df), width='stretch', height=620)
+
+        # ── Mobiel-vriendelijke tabelweergave ─────────────────────────────────
+        # Detecteer schermgrootte via URL-parameter of toon toggle
+        is_mobile = st.checkbox("📱 Compacte weergave (mobiel)", value=False, key="mobile_view")
+
+        if is_mobile:
+            # Compacte versie: alleen de meest essentiële kolommen
+            display_cols = [c for c in main_df.columns if not c.startswith('_')]
+            mobile_cols  = ['Ticker', 'Koers', 'RSI (14D)', 'Afwijking %', 'Actie']
+            mobile_cols  = [c for c in mobile_cols if c in display_cols]
+            mobile_df    = main_df[mobile_cols].copy()
+
+            def style_mobile(df):
+                def row_style(row):
+                    # Haal rij-data op uit originele df
+                    ticker_val = row.get('Ticker','')
+                    orig = main_df[main_df['Ticker'] == ticker_val]
+                    rsi_v = float(orig['_rsi_float'].iloc[0]) if not orig.empty else 50.0
+                    dev_v = float(orig['_dev_float'].iloc[0]) if not orig.empty else 999.0
+                    action = str(row.get('Actie',''))
+                    base   = 'background-color:#13171C;color:#E8ECEF;'
+                    styles = [base]*len(row)
+                    col_list = list(row.index)
+                    # RSI kleur
+                    if 'RSI (14D)' in col_list:
+                        idx = col_list.index('RSI (14D)')
+                        if rsi_v < TABLE_RSI_GREEN:   styles[idx]='background-color:#00843A;color:#FFF;font-weight:600;'
+                        elif rsi_v > TABLE_RSI_RED:   styles[idx]='background-color:#A32040;color:#FFF;font-weight:600;'
+                    # Afwijking kleur
+                    if 'Afwijking %' in col_list:
+                        idx = col_list.index('Afwijking %')
+                        if dev_v < TABLE_DEV_GREEN:   styles[idx]='background-color:#00843A;color:#FFF;font-weight:600;'
+                    # Actie kleur
+                    if 'Actie' in col_list:
+                        idx = col_list.index('Actie')
+                        if 'KOOPWAARDIG' in action:   styles[idx]='background-color:#00843A;color:#FFF;font-weight:700;'
+                        elif 'VOORZICHTIG' in action: styles[idx]='background-color:#A32040;color:#FFF;font-weight:600;'
+                        elif 'AANHOUDEN' in action:   styles[idx]='background-color:#1A1500;color:#F0B90B;font-weight:600;'
+                    return styles
+                s = df.style.apply(row_style, axis=1)
+                s.set_table_styles([
+                    {'selector':'thead th','props':[
+                        ('background-color','#0B0E11'),('color','#F0B90B'),
+                        ('font-size','0.75rem'),('padding','6px 8px'),
+                        ('border-bottom','2px solid #F0B90B')]},
+                    {'selector':'tbody td','props':[
+                        ('font-size','0.8rem'),('padding','5px 8px'),
+                        ('border-bottom','1px solid #2B3139')]},
+                ])
+                return s
+
+            st.dataframe(style_mobile(mobile_df), width='stretch', height=600)
+            st.caption("Toon alle kolommen → vink 'Compacte weergave' uit")
+        else:
+            st.dataframe(style_main_table(main_df), width='stretch', height=620)
 
         # Deep Dive selectie
         st.markdown("---")
@@ -2027,7 +2081,13 @@ with main_tabs[0]:
                     ])
                     return s
 
-                st.dataframe(style_wl(wl_df), width='stretch', height=300)
+                wl_mobile = st.session_state.get('mobile_view', False)
+                if wl_mobile:
+                    wl_mobile_cols = ['Ticker', 'Koers', 'RSI', 'Afw%', 'Gedetecteerd Patroon']
+                    wl_mobile_cols = [c for c in wl_mobile_cols if c in wl_df.columns]
+                    st.dataframe(style_wl(wl_df[wl_mobile_cols]), width='stretch', height=300)
+                else:
+                    st.dataframe(style_wl(wl_df), width='stretch', height=300)
 
                 bullish_n = sum(1 for r in wl_rows if 'Bullish' in str(r.get('Gedetecteerd Patroon', '')))
                 if bullish_n > 0:
@@ -2173,15 +2233,15 @@ with main_tabs[1]:
             sm5.metric("📊 Totaal Hits",  len(df_scan))
 
             st.markdown("<br>", unsafe_allow_html=True)
-
-            # Dynamische header met exact aantal gevonden kansen
             st.subheader(f"🎯 Gevonden Opportuniteiten ({len(df_scan)} tickers goedgekeurd)")
 
-            # Tabel zonder vaste hoogte — klapt automatisch uit met het aantal rijen
-            st.dataframe(
-                style_scanner_df(df_scan),
-                width='stretch',
-            )
+            scan_mobile = st.session_state.get('mobile_view', False)
+            if scan_mobile:
+                scan_mobile_cols = ['Ticker', 'Koers', 'RSI (14D)', 'MTF Status', 'R:R']
+                scan_mobile_cols = [c for c in scan_mobile_cols if c in df_scan.columns]
+                st.dataframe(style_scanner_df(df_scan[scan_mobile_cols]), width='stretch')
+            else:
+                st.dataframe(style_scanner_df(df_scan), width='stretch')
 
             st.markdown("---")
             all_tickers_scan = df_scan['Ticker'].tolist()
