@@ -236,16 +236,36 @@ st.markdown(f"""
 import json, os
 
 DEFAULT_TICKERS = [
-    "NVDA", "ASML.AS", "MSFT", "AMD", "TSLA", "ARM", "SAP", "CSCO", "MU",
-    "ADYEN.AS", "ZTS", "BAYN.DE", "JNJ", "ABBV", "OR.PA", "PG", "PEP",
-    "AD.AS", "KO", "MCD", "UNA.AS", "O", "JPM", "ADP", "V",
-    "GLD", "SLV", "USO", "FCX", "CAT", "WM", "LOW", "COST",
-    "TRMB", "COTY", "SITE", "CMCSA", "FMC", "COIN", "INTU", "KR", "HPQ",
-    "PFE", "MRNA", "ILMN", "NKE", "SBUX", "CRWD", "PANW", "CRM",
-    "MA", "PYPL", "AMZN", "NFLX", "DIS", "LMT", "RTX",
-    "XOM", "CVX", "ALB", "NEM", "GOLD", "FDX", "UPS",
-    "MAERSK-B.CO", "SHELL.AS", "RHM.DE", "MC.PA", "WMT.DE",
-    "EME", "EQT", "ESRT",
+    # Tech, Semis & Software
+    "NVDA","ASML.AS","MSFT","AMD","TSLA","ARM","SAP","CSCO","MU",
+    "ADYEN.AS","TRMB","COTY","SITE","CMCSA","FMC","COIN","INTU",
+    "KR","HPQ","CRWD","PANW","CRM","MA","PYPL","AMZN","NFLX","DIS",
+    # Healthcare & Consumer
+    "ZTS","BAYN.DE","JNJ","ABBV","OR.PA","PG","PEP","AD.AS","KO",
+    "MCD","UNA.AS","PFE","MRNA","ILMN","NKE","SBUX",
+    # Finance & Real Estate
+    "JPM","ADP","V","O","ESRT",
+    # Industrials & Materials
+    "CAT","WM","LOW","COST","LMT","RTX","FDX","UPS","EME",
+    "ALB","NEM","GOLD","FCX",
+    # Commodities & Precious Metals ETFs
+    "GLD","SLV","USO",
+    # European Tickers
+    "MAERSK-B.CO","SHELL.AS","RHM.DE","MC.PA","WMT.DE",
+    # Traditional Energy — Oil & Gas
+    "XOM","CVX","COP","EOG","OXY","FANG","DVN","HES","MRO","APA",
+    "EQT","CTRA","SHEL","BP","TTE",
+    # Traditional Energy — Refining & Infrastructure
+    "MPC","VLO","PSX","OKE","KMI","WMB","MPLX",
+    # Traditional Energy — Equipment & Services
+    "SLB","HAL","BKR",
+    # Power Generation & Utilities
+    "CEG","VST","NEE","DUK","SO","D","AEP","ED","PCG","SRE",
+    "EIX","ETR","FE","AES","XEL",
+    # Clean Tech & Alternative Energy
+    "GEV","ENPH","SEDG","BEP","RUN","PLUG",
+    # Energy ETFs
+    "XLE","VDE",
 ]
 
 DEFAULT_WATCHLIST = {
@@ -2134,25 +2154,64 @@ def build_candlestick_chart(df: pd.DataFrame, ticker: str) -> go.Figure:
             font=dict(size=10, color='#848E9C'),
             orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1,
         ),
-        margin=dict(l=10, r=80, t=40, b=10),   # r=80 voor as-labels rechts
-        height=820,
+        margin=dict(l=10, r=80, t=40, b=10),
+        height=860,
         hovermode='x unified',
-        hoverlabel=dict(bgcolor='#13171C', font_color='#E8ECEF', bordercolor='#F0B90B'),
+        hoverlabel=dict(
+            bgcolor='#13171C',
+            font_color='#E8ECEF',
+            bordercolor='#F0B90B',
+            font=dict(family='JetBrains Mono, monospace', size=11),
+            namelength=-1,          # Volledige naam tonen in hover
+        ),
+        dragmode='pan',             # Standaard: pan (zoals TradingView)
+        selectdirection='h',
+        newshape=dict(
+            line=dict(color='#F0B90B', width=1.5),
+            fillcolor='rgba(240,185,11,0.1)',
+        ),
+        modebar=dict(
+            bgcolor='rgba(19,23,28,0.85)',
+            color='#848E9C',
+            activecolor='#F0B90B',
+        ),
     )
 
-    # Assen per row
+    # ── ASSEN — crosshair + zoom op alle panels ───────────────────────────────
     for r in [1, 2, 3, 4]:
         fig.update_xaxes(
             row=r, col=1,
-            gridcolor='#2B3139', zeroline=False,
-            showgrid=True, tickfont=dict(color='#848E9C'),
+            gridcolor='#2B3139',
+            zeroline=False,
+            showgrid=True,
+            tickfont=dict(color='#848E9C'),
             linecolor='#2B3139',
+            # Crosshair spike
+            showspikes=True,
+            spikemode='across+toaxis',
+            spikesnap='cursor',
+            spikecolor='#848E9C',
+            spikethickness=1,
+            spikedash='dot',
+            fixedrange=False,       # X-as zoombaar
         )
         fig.update_yaxes(
             row=r, col=1,
-            gridcolor='#2B3139', zeroline=False,
-            showgrid=True, tickfont=dict(color='#848E9C'),
+            gridcolor='#2B3139',
+            zeroline=False,
+            showgrid=True,
+            tickfont=dict(color='#848E9C'),
             linecolor='#2B3139',
+            # Crosshair spike
+            showspikes=True,
+            spikemode='across+toaxis',
+            spikesnap='cursor',
+            spikecolor='#848E9C',
+            spikethickness=1,
+            spikedash='dot',
+            fixedrange=False,       # Y-as zoombaar
+            # Prijs-label rechts op cursor
+            showticklabels=True,
         )
 
     fig.update_yaxes(title_text="Prijs",   row=1, col=1, title_font=dict(color='#F0B90B'))
@@ -2792,10 +2851,62 @@ with main_tabs[2]:
         st.markdown("<br>", unsafe_allow_html=True)
 
         fig = build_candlestick_chart(df_dd, active_ticker)
+
+        # ── TradingView-stijl interactie ──────────────────────────────────────
+        # Scrollwiel = inzoomen, dubbelklik = reset, crosshair cursor
+        fig.update_layout(
+            xaxis=dict(
+                rangeslider=dict(visible=False),
+                showspikes=True,
+                spikemode='across+toaxis',
+                spikesnap='cursor',
+                spikecolor='#848E9C',
+                spikethickness=1,
+                spikedash='dot',
+            ),
+            yaxis=dict(
+                showspikes=True,
+                spikemode='across+toaxis',
+                spikesnap='cursor',
+                spikecolor='#848E9C',
+                spikethickness=1,
+                spikedash='dot',
+                fixedrange=False,   # Y-as ook zoombaar
+            ),
+            hovermode='x unified',
+            dragmode='pan',         # Standaard: slepen = pannen (zoals TradingView)
+        )
+
+        # Zelfde crosshair op alle subpanels
+        for ax in ['xaxis2','xaxis3','xaxis4','yaxis2','yaxis3','yaxis4']:
+            fig.update_layout(**{ax: dict(
+                showspikes=True,
+                spikemode='across+toaxis',
+                spikesnap='cursor',
+                spikecolor='#848E9C',
+                spikethickness=1,
+                spikedash='dot',
+                fixedrange=False,
+            )})
+
         st.plotly_chart(fig, use_container_width=True, config={
-            'displayModeBar': True,
-            'modeBarButtonsToRemove': ['toImage'],
-            'displaylogo': False,
+            'scrollZoom':           True,       # Scrollwiel = zoom (zoals TradingView)
+            'displayModeBar':       True,
+            'modeBarButtonsToRemove': ['toImage', 'lasso2d', 'select2d'],
+            'modeBarButtonsToAdd':  [
+                'drawline',         # Trendlijn tekenen
+                'drawopenpath',     # Vrije lijn
+                'drawrect',         # Rechthoek (box selectie)
+                'eraseshape',       # Verwijder getekende lijnen
+            ],
+            'displaylogo':          False,
+            'doubleClick':          'reset',    # Dubbelklik = reset zoom (zoals TradingView)
+            'showTips':             True,
+            'toImageButtonOptions': {
+                'format': 'png',
+                'filename': f'QuantEdge_{active_ticker}',
+                'scale': 2,
+            },
         })
 
         st.markdown("---")
