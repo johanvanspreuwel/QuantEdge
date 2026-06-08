@@ -261,8 +261,79 @@ DEFAULT_WATCHLIST = {
     "ESRT": "ESRT",
 }
 
-# Probeer lokaal JSON-bestand (werkt thuis, niet op cloud)
+# ─────────────────────────────────────────────────────────────────────────────
+# PERSISTENTE OPSLAG via GitHub API
+# Werkt op Streamlit Cloud én lokaal.
+# Vereist in Streamlit Secrets:
+#   GITHUB_TOKEN = "ghp_..."
+#   GITHUB_REPO  = "gebruikersnaam/QuantEdge"
+#   GITHUB_FILE  = "quantedge_userdata.json"
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _get_github_config():
+    """Haal GitHub configuratie op uit Streamlit Secrets of omgevingsvariabelen."""
+    try:
+        token = st.secrets.get("GITHUB_TOKEN", "")
+        repo  = st.secrets.get("GITHUB_REPO",  "")
+        file  = st.secrets.get("GITHUB_FILE",  "quantedge_userdata.json")
+        if token and repo:
+            return token, repo, file
+    except Exception:
+        pass
+    return None, None, "quantedge_userdata.json"
+
+def _load_from_github():
+    """Laad tickers en watchlist uit GitHub. Retourneert None als niet beschikbaar."""
+    token, repo, file = _get_github_config()
+    if not token:
+        return None
+    try:
+        url  = f"https://api.github.com/repos/{repo}/contents/{file}"
+        hdrs = {"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"}
+        resp = requests.get(url, headers=hdrs, timeout=10)
+        if resp.status_code == 200:
+            import base64
+            content = base64.b64decode(resp.json()["content"]).decode("utf-8")
+            data    = json.loads(content)
+            if isinstance(data.get("tickers"), list) and isinstance(data.get("watchlist"), dict):
+                return data
+        elif resp.status_code == 404:
+            return None  # Bestand bestaat nog niet — eerste keer
+    except Exception:
+        pass
+    return None
+
+def _save_to_github():
+    """Sla tickers en watchlist op in GitHub."""
+    token, repo, file = _get_github_config()
+    if not token:
+        return False
+    try:
+        import base64
+        data    = {
+            "tickers":   list(st.session_state.main_market_tickers),
+            "watchlist": dict(st.session_state.custom_watchlist),
+        }
+        content = base64.b64encode(
+            json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8")
+        ).decode("utf-8")
+        url  = f"https://api.github.com/repos/{repo}/contents/{file}"
+        hdrs = {"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"}
+        # Haal huidige SHA op (nodig voor update)
+        sha  = None
+        resp = requests.get(url, headers=hdrs, timeout=10)
+        if resp.status_code == 200:
+            sha = resp.json().get("sha")
+        payload = {"message": "QuantEdge: tickers bijgewerkt", "content": content}
+        if sha:
+            payload["sha"] = sha
+        resp = requests.put(url, headers=hdrs, json=payload, timeout=10)
+        return resp.status_code in (200, 201)
+    except Exception:
+        return False
+
 def _get_local_storage():
+    """Lokale JSON fallback voor thuis gebruik."""
     try:
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "quantedge_userdata.json")
         if os.path.exists(path):
@@ -275,34 +346,44 @@ def _get_local_storage():
     return None
 
 def _save_local_storage() -> None:
-    """Sla op naar lokaal JSON-bestand als dat mogelijk is (thuis)."""
+    """Sla op naar lokaal JSON-bestand (thuis op pc)."""
     try:
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "quantedge_userdata.json")
-        data = {
-            'tickers':   list(st.session_state.main_market_tickers),
-            'watchlist': dict(st.session_state.custom_watchlist),
-        }
+        data = {'tickers': list(st.session_state.main_market_tickers),
+                'watchlist': dict(st.session_state.custom_watchlist)}
         with open(path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
     except Exception:
-        pass  # Op cloud is dit normaal — geen fout tonen
+        pass
 
-# Alias voor bestaande aanroepen
 def _save_userdata() -> None:
+    """Sla op via GitHub (cloud) én lokaal (thuis). Beide tegelijk."""
+    _save_to_github()
     _save_local_storage()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SESSION STATE DEFAULTS
+# Laadvolgorde:
+#   1. GitHub (Streamlit Cloud) — persistent over alle sessies
+#   2. Lokaal JSON-bestand (thuis op pc)
+#   3. DEFAULT_TICKERS (ingebakken in code = jouw 72 tickers)
 # ─────────────────────────────────────────────────────────────────────────────
 
 if 'main_market_tickers' not in st.session_state:
-    local = _get_local_storage()
-    if local:
-        st.session_state.main_market_tickers = local['tickers']
-        st.session_state.custom_watchlist    = local['watchlist']
+    # Probeer GitHub eerst
+    gh_data = _load_from_github()
+    if gh_data:
+        st.session_state.main_market_tickers = gh_data['tickers']
+        st.session_state.custom_watchlist    = gh_data['watchlist']
     else:
-        st.session_state.main_market_tickers = list(DEFAULT_TICKERS)
-        st.session_state.custom_watchlist    = dict(DEFAULT_WATCHLIST)
+        # Lokaal bestand als fallback
+        local = _get_local_storage()
+        if local:
+            st.session_state.main_market_tickers = local['tickers']
+            st.session_state.custom_watchlist    = local['watchlist']
+        else:
+            st.session_state.main_market_tickers = list(DEFAULT_TICKERS)
+            st.session_state.custom_watchlist    = dict(DEFAULT_WATCHLIST)
 
 if 'custom_watchlist' not in st.session_state:
     st.session_state.custom_watchlist = dict(DEFAULT_WATCHLIST)
@@ -444,50 +525,190 @@ def compute_support_resistance(df: pd.DataFrame, window: int = SUPPORT_WINDOW, c
 
 
 def detect_candlestick_pattern(df: pd.DataFrame) -> str:
-    """Detecteer candlestick-patronen op de laatste 2 kaarsen. MultiIndex-safe."""
+    """
+    Detecteer candlestick-patronen op de laatste 3 kaarsen. MultiIndex-safe.
+
+    Patronen (bullish):
+      Doji, Bullish Hammer, Inverted Hammer, Bullish Engulfing,
+      Morning Star, Bullish Harami, Piercing Line, Three White Soldiers,
+      Bullish Marubozu, Tweezer Bottom
+
+    Patronen (bearish):
+      Bearish Engulfing, Shooting Star, Hanging Man, Evening Star,
+      Bearish Harami, Dark Cloud Cover, Three Black Crows,
+      Bearish Marubozu, Tweezer Top
+    """
     try:
-        if df is None or len(df) < 2:
+        if df is None or len(df) < 3:
             return "Geen data"
 
-        # Normaliseer MultiIndex kolommen indien nodig
         if isinstance(df.columns, pd.MultiIndex):
             df = df.copy()
             df.columns = [col[0] for col in df.columns]
 
-        def _scalar(val):
-            """Extraheer altijd een scalar float, ook als val een Series/array is."""
-            if hasattr(val, 'iloc'):
-                val = val.iloc[0]
+        def _sc(val):
+            if hasattr(val, 'iloc'): val = val.iloc[0]
             return float(val)
 
-        today = df.iloc[-1]
-        prev  = df.iloc[-2]
-
-        o  = _scalar(today['Open']);  h  = _scalar(today['High'])
-        l  = _scalar(today['Low']);   c  = _scalar(today['Close'])
-        po = _scalar(prev['Open']);   ph = _scalar(prev['High'])
-        pl = _scalar(prev['Low']);    pc = _scalar(prev['Close'])
-
         import math as _m
-        # Sla over als een van de waarden NaN is
-        if any(_m.isnan(v) for v in [o, h, l, c, po, ph, pl, pc]):
+
+        c3 = df.iloc[-3]   # 3 kaarsen geleden
+        c2 = df.iloc[-2]   # gisteren
+        c1 = df.iloc[-1]   # vandaag
+
+        # Extraheer OHLC voor alle drie
+        o1,h1,l1,c1v = _sc(c1['Open']),_sc(c1['High']),_sc(c1['Low']),_sc(c1['Close'])
+        o2,h2,l2,c2v = _sc(c2['Open']),_sc(c2['High']),_sc(c2['Low']),_sc(c2['Close'])
+        o3,h3,l3,c3v = _sc(c3['Open']),_sc(c3['High']),_sc(c3['Low']),_sc(c3['Close'])
+
+        if any(_m.isnan(v) for v in [o1,h1,l1,c1v,o2,h2,l2,c2v,o3,h3,l3,c3v]):
             return "Geen data"
 
-        body         = abs(c - o)
-        total_range  = h - l if (h - l) > 0 else 0.0001
-        lower_shadow = min(o, c) - l
-        upper_shadow = h - max(o, c)
+        # Hulpvariabelen vandaag
+        body1        = abs(c1v - o1)
+        range1       = h1 - l1 if h1-l1 > 0 else 0.0001
+        lower_sh1    = min(o1,c1v) - l1
+        upper_sh1    = h1 - max(o1,c1v)
+        is_bull1     = c1v > o1
+        is_bear1     = c1v < o1
 
-        if body / total_range <= CANDLE_DOJI_MAX_BODY:
+        # Hulpvariabelen gisteren
+        body2        = abs(c2v - o2)
+        range2       = h2 - l2 if h2-l2 > 0 else 0.0001
+        lower_sh2    = min(o2,c2v) - l2
+        upper_sh2    = h2 - max(o2,c2v)
+        is_bull2     = c2v > o2
+        is_bear2     = c2v < o2
+
+        # Hulpvariabelen eergisteren
+        body3        = abs(c3v - o3)
+        is_bull3     = c3v > o3
+        is_bear3     = c3v < o3
+
+        avg_body = (body1 + body2 + body3) / 3 if (body1+body2+body3) > 0 else 0.0001
+
+        # ── DOJI ─────────────────────────────────────────────────────────────
+        if body1 / range1 <= CANDLE_DOJI_MAX_BODY:
+            if upper_sh1 > 2 * lower_sh1 and upper_sh1 > body1 * 2:
+                return "Gravestone Doji"       # lange bovenste schaduw
+            if lower_sh1 > 2 * upper_sh1 and lower_sh1 > body1 * 2:
+                return "Dragonfly Doji"        # lange onderste schaduw
             return "Doji"
-        if lower_shadow >= CANDLE_HAMMER_SHADOW * body and upper_shadow <= CANDLE_HAMMER_TOP_MAX * total_range and c >= (l + CANDLE_HAMMER_CLOSE_MIN * total_range):
+
+        # ── BULLISH HAMMER ────────────────────────────────────────────────────
+        if (lower_sh1 >= CANDLE_HAMMER_SHADOW * body1 and
+                upper_sh1 <= CANDLE_HAMMER_TOP_MAX * range1 and
+                c1v >= l1 + CANDLE_HAMMER_CLOSE_MIN * range1):
             return "Bullish Hammer"
-        if c > o and pc < po and c > po and o < pc:
-            return "Bullish Engulfing"
-        if c < o and pc > po and c < po and o > pc:
-            return "Bearish Engulfing"
-        if upper_shadow >= CANDLE_STAR_SHADOW * body and lower_shadow <= CANDLE_STAR_LOW_MAX * total_range and c <= (l + CANDLE_STAR_CLOSE_MAX * total_range):
+
+        # ── INVERTED HAMMER (bullish na neerwaartse trend) ────────────────────
+        if (upper_sh1 >= CANDLE_HAMMER_SHADOW * body1 and
+                lower_sh1 <= CANDLE_HAMMER_TOP_MAX * range1 and
+                is_bull2 == False):           # vorige kaars was bearish
+            return "Inverted Hammer"
+
+        # ── HANGING MAN (bearish na opwaartse trend) ──────────────────────────
+        if (lower_sh1 >= CANDLE_HAMMER_SHADOW * body1 and
+                upper_sh1 <= CANDLE_HAMMER_TOP_MAX * range1 and
+                is_bull2):                    # vorige kaars was bullish
+            return "Hanging Man"
+
+        # ── SHOOTING STAR ─────────────────────────────────────────────────────
+        if (upper_sh1 >= CANDLE_STAR_SHADOW * body1 and
+                lower_sh1 <= CANDLE_STAR_LOW_MAX * range1 and
+                c1v <= l1 + CANDLE_STAR_CLOSE_MAX * range1):
             return "Shooting Star"
+
+        # ── BULLISH ENGULFING ─────────────────────────────────────────────────
+        if is_bull1 and is_bear2 and c1v > o2 and o1 < c2v:
+            return "Bullish Engulfing"
+
+        # ── BEARISH ENGULFING ─────────────────────────────────────────────────
+        if is_bear1 and is_bull2 and c1v < o2 and o1 > c2v:
+            return "Bearish Engulfing"
+
+        # ── BULLISH HARAMI (klein groen lichaam in groot rood lichaam) ─────────
+        if (is_bull1 and is_bear2 and
+                o1 > c2v and c1v < o2 and
+                body1 < body2 * 0.5):
+            return "Bullish Harami"
+
+        # ── BEARISH HARAMI ────────────────────────────────────────────────────
+        if (is_bear1 and is_bull2 and
+                o1 < c2v and c1v > o2 and
+                body1 < body2 * 0.5):
+            return "Bearish Harami"
+
+        # ── PIERCING LINE (bullish) ────────────────────────────────────────────
+        if (is_bear2 and is_bull1 and
+                o1 < l2 and                            # opent onder vorig dieptepunt
+                c1v > (o2 + c2v) / 2 and              # sluit boven midden vorige kaars
+                c1v < o2):                             # maar nog onder vorige open
+            return "Piercing Line"
+
+        # ── DARK CLOUD COVER (bearish) ────────────────────────────────────────
+        if (is_bull2 and is_bear1 and
+                o1 > h2 and                            # opent boven vorig hoogtepunt
+                c1v < (o2 + c2v) / 2 and              # sluit onder midden vorige kaars
+                c1v > o2):                             # maar nog boven vorige open
+            return "Dark Cloud Cover"
+
+        # ── MORNING STAR (bullish, 3-kaars patroon) ───────────────────────────
+        if (is_bear3 and                               # kaars 3 geleden: bearish
+                body2 < avg_body * 0.3 and            # gisteren: kleine kaars (ster)
+                is_bull1 and                           # vandaag: bullish
+                c1v > (o3 + c3v) / 2):                # sluit boven midden eerste kaars
+            return "Morning Star"
+
+        # ── EVENING STAR (bearish, 3-kaars patroon) ───────────────────────────
+        if (is_bull3 and
+                body2 < avg_body * 0.3 and
+                is_bear1 and
+                c1v < (o3 + c3v) / 2):
+            return "Evening Star"
+
+        # ── THREE WHITE SOLDIERS (bullish) ────────────────────────────────────
+        if (is_bull1 and is_bull2 and is_bull3 and
+                c1v > c2v > c3v and                    # elke sluit hoger
+                o1 > o2 > o3 and                       # elke open hoger
+                body1 > avg_body * 0.6 and             # stevige lichamen
+                body2 > avg_body * 0.6 and
+                body3 > avg_body * 0.6):
+            return "Three White Soldiers"
+
+        # ── THREE BLACK CROWS (bearish) ───────────────────────────────────────
+        if (is_bear1 and is_bear2 and is_bear3 and
+                c1v < c2v < c3v and
+                o1 < o2 < o3 and
+                body1 > avg_body * 0.6 and
+                body2 > avg_body * 0.6 and
+                body3 > avg_body * 0.6):
+            return "Three Black Crows"
+
+        # ── BULLISH MARUBOZU (geen schaduwen, sterke koop) ────────────────────
+        if (is_bull1 and
+                upper_sh1 <= range1 * 0.02 and
+                lower_sh1 <= range1 * 0.02 and
+                body1 > avg_body * 1.5):
+            return "Bullish Marubozu"
+
+        # ── BEARISH MARUBOZU ──────────────────────────────────────────────────
+        if (is_bear1 and
+                upper_sh1 <= range1 * 0.02 and
+                lower_sh1 <= range1 * 0.02 and
+                body1 > avg_body * 1.5):
+            return "Bearish Marubozu"
+
+        # ── TWEEZER BOTTOM (bullish) ──────────────────────────────────────────
+        if (is_bear2 and is_bull1 and
+                abs(l1 - l2) / (range1 + range2 + 0.0001) < 0.02):  # gelijke dieptepunten
+            return "Tweezer Bottom"
+
+        # ── TWEEZER TOP (bearish) ─────────────────────────────────────────────
+        if (is_bull2 and is_bear1 and
+                abs(h1 - h2) / (range1 + range2 + 0.0001) < 0.02):  # gelijke hoogtepunten
+            return "Tweezer Top"
+
         return "Geen Patroon"
 
     except Exception:
@@ -1695,6 +1916,45 @@ def build_candlestick_chart(df: pd.DataFrame, ticker: str) -> go.Figure:
         name='SMA 20', showlegend=False
     ), row=1, col=1)
 
+    # ── SMA 50 & SMA 200 ─────────────────────────────────────────────────────
+    sma50  = close.rolling(50).mean()
+    sma200 = close.rolling(200).mean()
+
+    if sma50.notna().sum() >= 10:
+        fig.add_trace(go.Scatter(
+            x=dates, y=sma50,
+            line=dict(color='#FF9800', width=1.5),
+            name='SMA 50', hovertemplate='SMA50: %{y:.2f}'
+        ), row=1, col=1)
+
+    if sma200.notna().sum() >= 10:
+        fig.add_trace(go.Scatter(
+            x=dates, y=sma200,
+            line=dict(color='#E91E63', width=2),
+            name='SMA 200', hovertemplate='SMA200: %{y:.2f}'
+        ), row=1, col=1)
+
+        # Golden/Death Cross annotatie
+        last_close = float(close.iloc[-1])
+        last_sma200 = float(sma200.dropna().iloc[-1]) if sma200.notna().any() else None
+        last_sma50  = float(sma50.dropna().iloc[-1])  if sma50.notna().any()  else None
+        if last_sma200 and last_sma50:
+            if last_sma50 > last_sma200:
+                cross_label = f"✅ Golden Cross (SMA50 > SMA200)"
+                cross_color = '#00C853'
+            else:
+                cross_label = f"⚠ Death Cross (SMA50 < SMA200)"
+                cross_color = '#F6465D'
+            fig.add_annotation(
+                x=dates[-1], y=last_sma200,
+                text=cross_label, showarrow=False,
+                font=dict(size=10, color=cross_color),
+                bgcolor='rgba(11,14,17,0.8)',
+                bordercolor=cross_color, borderwidth=1,
+                xanchor='right', yanchor='bottom',
+                row=1, col=1
+            )
+
     # Robuuste support/resistance via de centrale helper (NaN-safe, drielaagse fallback)
     _last_price_chart = float(close.iloc[-1])
     support_val, resistance_val = compute_support_resistance(df, SUPPORT_WINDOW, current_price=_last_price_chart)
@@ -1831,6 +2091,28 @@ with main_tabs[0]:
             elif t in st.session_state.main_market_tickers:
                 st.warning(f"⚠ {t} staat al in de lijst.")
 
+        # Import: plak een kommalijst om tickers toe te voegen
+        with st.expander("📋 Import — meerdere tickers tegelijk", expanded=False):
+            import_txt = st.text_area(
+                "Plak tickers (komma- of regelgescheiden)",
+                placeholder="AAPL, MSFT, GOOGL\nTSLA\nNVDA",
+                height=100, key="import_tickers_txt"
+            )
+            if st.button("✅ Importeer lijst", key="btn_import_tickers"):
+                raw = re.split(r'[\n,;]+', import_txt)
+                added = []
+                for t in raw:
+                    t = t.strip().upper()
+                    if t and t not in st.session_state.main_market_tickers:
+                        st.session_state.main_market_tickers.append(t)
+                        added.append(t)
+                if added:
+                    _save_userdata()
+                    st.success(f"✅ {len(added)} tickers toegevoegd: {', '.join(added)}")
+                    st.rerun()
+                else:
+                    st.info("Geen nieuwe tickers gevonden.")
+
     with col_del:
         ticker_to_remove = st.selectbox(
             "🗑 Ticker Verwijderen",
@@ -1844,16 +2126,23 @@ with main_tabs[0]:
                 st.success(f"🗑 {ticker_to_remove} verwijderd.")
                 st.rerun()
 
+        # Export: toon huidige lijst om te kopiëren
+        with st.expander("📤 Export — kopieer mijn lijst", expanded=False):
+            export_str = ", ".join(st.session_state.main_market_tickers)
+            st.text_area(
+                "Kopieer deze lijst en bewaar hem",
+                value=export_str,
+                height=120,
+                key="export_tickers_txt"
+            )
+            st.caption("💡 Plak dit de volgende keer bij 'Import' om je lijst te herstellen.")
+
     with col_act:
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("🔄 Refresh Data", key="btn_refresh_main"):
             st.cache_data.clear()
             st.rerun()
-        if st.button("↩ Reset Standaard", key="btn_reset_tickers", help="Herstel de originele tickerlijst"):
-            st.session_state.main_market_tickers = list(DEFAULT_TICKERS)
-            _save_userdata()
-            st.rerun()
-        st.markdown(f"<small style='color:#848E9C;'>{len(st.session_state.main_market_tickers)} tickers · 💾 auto-opgeslagen</small>", unsafe_allow_html=True)
+        st.markdown(f"<small style='color:#848E9C;'>{len(st.session_state.main_market_tickers)} tickers</small>", unsafe_allow_html=True)
 
     st.markdown("---")
 
@@ -2303,15 +2592,17 @@ with main_tabs[2]:
 
     active_ticker = st.session_state.current_alpha
 
-    period_map = {"1 Maand": "1mo", "3 Maanden": "3mo", "6 Maanden": "6mo", "1 Jaar": "1y"}
+    period_map = {"1 Maand": "1mo", "3 Maanden": "3mo", "6 Maanden": "6mo", "1 Jaar": "1y", "2 Jaar": "2y"}
     period_choice = st.radio(
         "📅 Tijdshorizon",
         options=list(period_map.keys()),
-        index=2,
+        index=3,
         horizontal=True,
         key="dd_period_radio"
     )
     period_str = period_map[period_choice]
+    if period_choice in ("1 Maand", "3 Maanden", "6 Maanden"):
+        st.caption("💡 SMA 200 vereist minimaal 1 jaar data — kies '1 Jaar' of '2 Jaar' voor de volledige lijn.")
 
     st.markdown("---")
 
