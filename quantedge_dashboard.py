@@ -1836,9 +1836,30 @@ def style_scanner_df(df: pd.DataFrame) -> pd.io.formats.style.Styler:
     return styled
 
 
+def _compute_atr_rma(high, low, close, period=14):
+    """Bereken ATR met RMA (Running/Wilder Moving Average) smoothing."""
+    tr = pd.concat([
+        high - low,
+        (high - close.shift(1)).abs(),
+        (low  - close.shift(1)).abs()
+    ], axis=1).max(axis=1)
+    # RMA = EWM met alpha = 1/period (Wilder's smoothing)
+    atr = tr.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
+    return atr
+
+
 def build_candlestick_chart(df: pd.DataFrame, ticker: str) -> go.Figure:
-    """Bouw een dark terminal-stijl Plotly candlestick-grafiek."""
-    # Normaliseer MultiIndex kolommen mocht fetch dit nog niet gedaan hebben
+    """
+    Bloomberg-stijl grafiek met:
+    1. SMA 200 (oranje, solide, met as-label)
+    2. Session background shading (pre-market / regulier / after-hours)
+    3. Support/Resistance consolidation box (paars-blauw)
+    4. ATR(14) sub-panel met RMA smoothing (donkerrood)
+    5. Gekleurde volume bars (groen/rood)
+    """
+    import math as _m
+
+    # Normaliseer MultiIndex
     if isinstance(df.columns, pd.MultiIndex):
         df = df.copy()
         df.columns = [col[0] for col in df.columns]
@@ -1853,24 +1874,82 @@ def build_candlestick_chart(df: pd.DataFrame, ticker: str) -> go.Figure:
     x = np.arange(n)
     dates = df.index
 
-    poly = np.polyfit(x, close.values.astype(float), 1)
+    # Indicatoren
+    poly     = np.polyfit(x, close.values.astype(float), 1)
     reg_line = np.polyval(poly, x)
-    std_dev = np.std(close.values.astype(float) - reg_line)
+    std_dev  = np.std(close.values.astype(float) - reg_line)
 
     bb_upper, bb_mid, bb_lower = compute_bollinger_series(close, BB_PERIOD, BB_STD_NORMAL)
-    rsi_s = compute_rsi_series(close, RSI_PERIOD)
+    rsi_s  = compute_rsi_series(close, RSI_PERIOD)
+    sma50  = close.rolling(50).mean()
+    sma200 = close.rolling(200).mean()
+    atr14  = _compute_atr_rma(high, low_s, close, period=14)
 
+    # Volume kleuren
     vol_colors = ['#00C853' if c >= o else '#F6465D'
                   for c, o in zip(close.values, open_.values)]
 
+    # ── 4 rijen: Prijs | Volume | RSI | ATR ──────────────────────────────────
     fig = make_subplots(
-        rows=3, cols=1,
+        rows=4, cols=1,
         shared_xaxes=True,
-        row_heights=[0.6, 0.2, 0.2],
-        vertical_spacing=0.02,
-        subplot_titles=[f'{ticker} – Candlestick + Regressiekanaal', 'Volume', 'RSI (14D)']
+        row_heights=[0.52, 0.16, 0.16, 0.16],
+        vertical_spacing=0.018,
+        subplot_titles=[
+            f'{ticker}  ·  SMA20/50/200  ·  BB  ·  Regressiekanaal',
+            'Volume',
+            'RSI (14D)',
+            'ATR (14 · RMA)'
+        ]
     )
 
+    # ── 2. SESSION BACKGROUND SHADING ────────────────────────────────────────
+    # Markeer afwisselend periodes (per 5 handelsdagen = week) met subtiele bands
+    # zodat sessieblokken zichtbaar zijn op daggrafieken.
+    # Op intraday (1H/4H) zou dit pre/regulier/after-hours zijn.
+    # Op daggrafiek gebruiken we alternatief lichte/donkere weekbanden.
+    is_daily = True
+    try:
+        if len(dates) > 1:
+            delta = dates[1] - dates[0]
+            is_daily = getattr(delta, 'days', 1) >= 1
+    except Exception:
+        is_daily = True
+
+    if is_daily and len(dates) >= 2:
+        # Weekbanden: even weken lichtblauw, oneven weken lichtbruin
+        week_starts = []
+        current_week = None
+        for i, d in enumerate(dates):
+            try:
+                wk = d.isocalendar()[1]
+                if wk != current_week:
+                    week_starts.append((i, wk))
+                    current_week = wk
+            except Exception:
+                pass
+
+        for idx_w, (start_i, week_num) in enumerate(week_starts):
+            end_i = week_starts[idx_w+1][0] if idx_w+1 < len(week_starts) else n
+            if start_i >= len(dates) or end_i > len(dates): continue
+            x0 = dates[start_i]
+            x1 = dates[min(end_i, len(dates)-1)]
+            # Even week = donkerblauw, oneven = donkerbruin
+            if week_num % 2 == 0:
+                fill_col = 'rgba(33,58,100,0.12)'   # donkerblauw
+            else:
+                fill_col = 'rgba(90,60,20,0.10)'    # donkerbruin/amber
+
+            # Voeg toe aan alle 4 panels
+            for row_n in [1, 2, 3, 4]:
+                fig.add_vrect(
+                    x0=x0, x1=x1,
+                    fillcolor=fill_col,
+                    line_width=0,
+                    row=row_n, col=1
+                )
+
+    # ── CANDLESTICKS ──────────────────────────────────────────────────────────
     fig.add_trace(go.Candlestick(
         x=dates, open=open_, high=high,
         low=low_s, close=close,
@@ -1879,99 +1958,126 @@ def build_candlestick_chart(df: pd.DataFrame, ticker: str) -> go.Figure:
         name='OHLC', line=dict(width=1),
     ), row=1, col=1)
 
+    # ── REGRESSIEKANAAL ───────────────────────────────────────────────────────
     fig.add_trace(go.Scatter(
         x=dates, y=reg_line,
         line=dict(color='#F0B90B', width=1.5, dash='dash'),
-        name='Regressie (Centraal)', hovertemplate='%{y:.2f}'
+        name='Regressie', hovertemplate='%{y:.2f}'
     ), row=1, col=1)
-
     fig.add_trace(go.Scatter(
-        x=dates, y=reg_line + 2 * std_dev,
+        x=dates, y=reg_line + 2*std_dev,
         line=dict(color='#F0B90B', width=1, dash='dot'),
-        name='+2σ Weerstand', hovertemplate='%{y:.2f}'
+        name='+2σ', hovertemplate='%{y:.2f}'
     ), row=1, col=1)
-
     fig.add_trace(go.Scatter(
-        x=dates, y=reg_line - 2 * std_dev,
+        x=dates, y=reg_line - 2*std_dev,
         line=dict(color='#2196F3', width=1, dash='dot'),
-        name='-2σ Support', hovertemplate='%{y:.2f}',
+        name='-2σ', hovertemplate='%{y:.2f}',
     ), row=1, col=1)
 
+    # ── BOLLINGER BANDS ───────────────────────────────────────────────────────
     fig.add_trace(go.Scatter(
         x=dates, y=bb_upper,
-        line=dict(color='rgba(240,185,11,0.3)', width=1),
+        line=dict(color='rgba(240,185,11,0.25)', width=1),
         name='BB Upper', showlegend=False
     ), row=1, col=1)
-
     fig.add_trace(go.Scatter(
         x=dates, y=bb_lower,
-        line=dict(color='rgba(33,150,243,0.3)', width=1),
+        line=dict(color='rgba(33,150,243,0.25)', width=1),
         name='BB Lower', fill='tonexty',
         fillcolor='rgba(240,185,11,0.03)', showlegend=False
     ), row=1, col=1)
-
     fig.add_trace(go.Scatter(
         x=dates, y=bb_mid,
-        line=dict(color='rgba(255,255,255,0.3)', width=1),
+        line=dict(color='rgba(255,255,255,0.25)', width=1),
         name='SMA 20', showlegend=False
     ), row=1, col=1)
 
-    # ── SMA 50 & SMA 200 ─────────────────────────────────────────────────────
-    sma50  = close.rolling(50).mean()
-    sma200 = close.rolling(200).mean()
-
+    # ── SMA 50 ────────────────────────────────────────────────────────────────
     if sma50.notna().sum() >= 10:
         fig.add_trace(go.Scatter(
             x=dates, y=sma50,
-            line=dict(color='#FF9800', width=1.5),
+            line=dict(color='#29B6F6', width=1.5),
             name='SMA 50', hovertemplate='SMA50: %{y:.2f}'
         ), row=1, col=1)
 
+    # ── 1. SMA 200 — Oranje, solide, met as-label ─────────────────────────────
+    last_sma200 = None
     if sma200.notna().sum() >= 10:
+        last_sma200 = float(sma200.dropna().iloc[-1])
         fig.add_trace(go.Scatter(
             x=dates, y=sma200,
-            line=dict(color='#E91E63', width=2),
-            name='SMA 200', hovertemplate='SMA200: %{y:.2f}'
+            line=dict(color='#FF6D00', width=2.5),   # Solid Orange
+            name='SMA 200',
+            hovertemplate='SMA200: %{y:.2f}',
         ), row=1, col=1)
 
-        # Golden/Death Cross annotatie
-        last_close = float(close.iloc[-1])
-        last_sma200 = float(sma200.dropna().iloc[-1]) if sma200.notna().any() else None
-        last_sma50  = float(sma50.dropna().iloc[-1])  if sma50.notna().any()  else None
-        if last_sma200 and last_sma50:
+        # As-label rechts: oranje badge met SMA200 waarde
+        fig.add_annotation(
+            x=1.0, y=last_sma200,
+            xref='paper', yref='y',
+            text=f"<b>SMA200  {last_sma200:.2f}</b>",
+            showarrow=False,
+            font=dict(size=10, color='#FF6D00'),
+            bgcolor='rgba(11,14,17,0.85)',
+            bordercolor='#FF6D00', borderwidth=1,
+            xanchor='left', yanchor='middle',
+        )
+
+        # Golden / Death Cross badge
+        last_sma50 = float(sma50.dropna().iloc[-1]) if sma50.notna().any() else None
+        if last_sma50:
             if last_sma50 > last_sma200:
-                cross_label = f"✅ Golden Cross (SMA50 > SMA200)"
-                cross_color = '#00C853'
+                cx_txt, cx_col = '✅ Golden Cross', '#00C853'
             else:
-                cross_label = f"⚠ Death Cross (SMA50 < SMA200)"
-                cross_color = '#F6465D'
+                cx_txt, cx_col = '⚠ Death Cross',  '#F6465D'
             fig.add_annotation(
                 x=dates[-1], y=last_sma200,
-                text=cross_label, showarrow=False,
-                font=dict(size=10, color=cross_color),
-                bgcolor='rgba(11,14,17,0.8)',
-                bordercolor=cross_color, borderwidth=1,
+                text=cx_txt, showarrow=False,
+                font=dict(size=10, color=cx_col),
+                bgcolor='rgba(11,14,17,0.85)',
+                bordercolor=cx_col, borderwidth=1,
                 xanchor='right', yanchor='bottom',
-                row=1, col=1
             )
 
-    # Robuuste support/resistance via de centrale helper (NaN-safe, drielaagse fallback)
-    _last_price_chart = float(close.iloc[-1])
-    support_val, resistance_val = compute_support_resistance(df, SUPPORT_WINDOW, current_price=_last_price_chart)
+    # ── 3. SUPPORT/RESISTANCE CONSOLIDATION BOX ───────────────────────────────
+    _last_price = float(close.iloc[-1])
+    support_val, resistance_val = compute_support_resistance(
+        df, SUPPORT_WINDOW, current_price=_last_price)
 
-    fig.add_hline(y=support_val, line_color='#00C853', line_width=1.5,
-                  line_dash='dot', row=1, col=1,
-                  annotation_text=f"Support {support_val:.2f}",
-                  annotation_font_color='#00C853', annotation_position='bottom right')
+    # Bovenlijn: lichtpaars   Onderlijn: lichtblauw   Vulling: semi-transparant paars
+    fig.add_hrect(
+        y0=support_val, y1=resistance_val,
+        fillcolor='rgba(120,80,200,0.06)',
+        line_width=0,
+        row=1, col=1
+    )
+    # Support lijn — lichtblauw
+    fig.add_hline(
+        y=support_val,
+        line_color='#64B5F6', line_width=1.5, line_dash='dot',
+        row=1, col=1,
+        annotation_text=f"Support  {support_val:.2f}",
+        annotation_font_color='#64B5F6',
+        annotation_position='bottom right'
+    )
+    # Resistance lijn — lichtpaars
+    fig.add_hline(
+        y=resistance_val,
+        line_color='#CE93D8', line_width=1.5, line_dash='dot',
+        row=1, col=1,
+        annotation_text=f"Resistance  {resistance_val:.2f}",
+        annotation_font_color='#CE93D8',
+        annotation_position='top right'
+    )
 
-    fig.add_hline(y=resistance_val, line_color='#F6465D', line_width=1.5,
-                  line_dash='dot', row=1, col=1,
-                  annotation_text=f"Resistance {resistance_val:.2f}",
-                  annotation_font_color='#F6465D', annotation_position='top right')
-
+    # ── 5. VOLUME BARS (groen/rood gekleurd) ──────────────────────────────────
     fig.add_trace(go.Bar(
         x=dates, y=vol_s,
-        marker_color=vol_colors, name='Volume', showlegend=False,
+        marker_color=vol_colors,
+        marker_line_width=0,
+        name='Volume', showlegend=False,
+        opacity=0.85,
     ), row=2, col=1)
 
     vol_ma = vol_s.rolling(VOL_MA_PERIOD).mean()
@@ -1981,18 +2087,42 @@ def build_candlestick_chart(df: pd.DataFrame, ticker: str) -> go.Figure:
         name='Vol MA20', showlegend=False
     ), row=2, col=1)
 
+    # ── RSI ───────────────────────────────────────────────────────────────────
     fig.add_trace(go.Scatter(
         x=dates, y=rsi_s,
         line=dict(color='#9C27B0', width=1.5),
         name='RSI', fill='tozeroy', fillcolor='rgba(156,39,176,0.07)'
     ), row=3, col=1)
-
     fig.add_hline(y=RSI_OVERBOUGHT, line_color='#F6465D', line_width=1, line_dash='dot', row=3, col=1)
-    fig.add_hline(y=RSI_OVERSOLD, line_color='#00C853', line_width=1, line_dash='dot', row=3, col=1)
-    fig.add_hline(y=50, line_color='rgba(255,255,255,0.2)', line_width=1, row=3, col=1)
-    fig.add_hrect(y0=RSI_OVERSOLD, y1=RSI_OVERBOUGHT, fillcolor='rgba(156,39,176,0.04)', line_width=0, row=3, col=1)
+    fig.add_hline(y=RSI_OVERSOLD,   line_color='#00C853', line_width=1, line_dash='dot', row=3, col=1)
+    fig.add_hline(y=50, line_color='rgba(255,255,255,0.15)', line_width=1, row=3, col=1)
+    fig.add_hrect(y0=RSI_OVERSOLD, y1=RSI_OVERBOUGHT,
+                  fillcolor='rgba(156,39,176,0.04)', line_width=0, row=3, col=1)
 
-    # ── BUG FIX: 'border_color' is ongeldig → gebruik 'bordercolor' ──
+    # ── 4. ATR(14) SUB-PANEL met RMA ─────────────────────────────────────────
+    last_atr = float(atr14.dropna().iloc[-1]) if atr14.notna().any() else 0.0
+    fig.add_trace(go.Scatter(
+        x=dates, y=atr14,
+        line=dict(color='#C62828', width=2),    # Solid Dark Red
+        name='ATR 14',
+        fill='tozeroy',
+        fillcolor='rgba(198,40,40,0.07)',
+        hovertemplate='ATR14: %{y:.4f}',
+    ), row=4, col=1)
+
+    # ATR as-label rechts: rood badge met huidige waarde
+    fig.add_annotation(
+        x=1.0, y=last_atr,
+        xref='paper', yref='y4',
+        text=f"<b>ATR14  {last_atr:.3f}</b>",
+        showarrow=False,
+        font=dict(size=10, color='#C62828'),
+        bgcolor='rgba(11,14,17,0.85)',
+        bordercolor='#C62828', borderwidth=1,
+        xanchor='left', yanchor='middle',
+    )
+
+    # ── LAYOUT ────────────────────────────────────────────────────────────────
     fig.update_layout(
         paper_bgcolor='#0B0E11',
         plot_bgcolor='#0B0E11',
@@ -2000,18 +2130,18 @@ def build_candlestick_chart(df: pd.DataFrame, ticker: str) -> go.Figure:
         xaxis_rangeslider_visible=False,
         legend=dict(
             bgcolor='rgba(19,23,28,0.8)',
-            bordercolor='#2B3139',        # <-- was 'border_color' (fout), nu 'bordercolor'
-            borderwidth=1,
+            bordercolor='#2B3139', borderwidth=1,
             font=dict(size=10, color='#848E9C'),
             orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1,
         ),
-        margin=dict(l=10, r=10, t=40, b=10),
-        height=700,
+        margin=dict(l=10, r=80, t=40, b=10),   # r=80 voor as-labels rechts
+        height=820,
         hovermode='x unified',
         hoverlabel=dict(bgcolor='#13171C', font_color='#E8ECEF', bordercolor='#F0B90B'),
     )
 
-    for r in [1, 2, 3]:
+    # Assen per row
+    for r in [1, 2, 3, 4]:
         fig.update_xaxes(
             row=r, col=1,
             gridcolor='#2B3139', zeroline=False,
@@ -2025,9 +2155,10 @@ def build_candlestick_chart(df: pd.DataFrame, ticker: str) -> go.Figure:
             linecolor='#2B3139',
         )
 
-    fig.update_yaxes(title_text="Prijs", row=1, col=1, title_font=dict(color='#F0B90B'))
-    fig.update_yaxes(title_text="Volume", row=2, col=1, title_font=dict(color='#F0B90B'))
-    fig.update_yaxes(title_text="RSI", row=3, col=1, title_font=dict(color='#F0B90B'), range=[0, 100])
+    fig.update_yaxes(title_text="Prijs",   row=1, col=1, title_font=dict(color='#F0B90B'))
+    fig.update_yaxes(title_text="Volume",  row=2, col=1, title_font=dict(color='#F0B90B'))
+    fig.update_yaxes(title_text="RSI",     row=3, col=1, title_font=dict(color='#F0B90B'), range=[0,100])
+    fig.update_yaxes(title_text="ATR 14",  row=4, col=1, title_font=dict(color='#C62828'))
 
     return fig
 
