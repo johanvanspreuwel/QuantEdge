@@ -859,6 +859,79 @@ def fetch_ticker_data(ticker: str, period: str = "3mo"):
         return None, None
 
 
+@st.cache_data(ttl=60)   # 1 minuut cache — sluit aan op 5M kaars-interval
+def fetch_intraday_patterns(ticker: str) -> dict:
+    """
+    Haal de laatste 2 kaarsen op voor 15M en 5M tijdschalen.
+    Retourneert patroon + richting (Bullish/Bearish) voor elke kaars.
+    Cache TTL = 60s zodat nieuwe 5M kaarsen snel worden opgepikt.
+    """
+    result = {
+        '15M[-1]': '–', '15M[0]': '–',
+        '5M[-1]':  '–', '5M[0]':  '–',
+    }
+    try:
+        def _get_pattern_and_dir(df_tf, label):
+            """Geeft patroon-string terug, of Bullish/Bearish als geen patroon."""
+            if df_tf is None or len(df_tf) < 3:
+                return '–'
+            if isinstance(df_tf.columns, pd.MultiIndex):
+                df_tf = df_tf.copy()
+                df_tf.columns = [c[0] for c in df_tf.columns]
+            df_tf = df_tf.dropna(subset=['Close'])
+            if len(df_tf) < 3:
+                return '–'
+            pat = detect_candlestick_pattern(df_tf)
+            # Als geen specifiek patroon, toon richting van de kaars
+            if pat == 'Geen Patroon':
+                try:
+                    c = float(df_tf['Close'].iloc[-1])
+                    o = float(df_tf['Open'].iloc[-1])
+                    return '🟢 Bullish' if c >= o else '🔴 Bearish'
+                except Exception:
+                    return 'Geen Patroon'
+            return pat
+
+        def _get_prev_pattern_and_dir(df_tf):
+            """Geeft patroon voor de kaars vóór de laatste ([-1])."""
+            if df_tf is None or len(df_tf) < 4:
+                return '–'
+            if isinstance(df_tf.columns, pd.MultiIndex):
+                df_tf = df_tf.copy()
+                df_tf.columns = [c[0] for c in df_tf.columns]
+            df_prev = df_tf.iloc[:-1]   # Verwijder laatste kaars → [-1] wordt de huidige
+            if len(df_prev) < 3:
+                return '–'
+            pat = detect_candlestick_pattern(df_prev)
+            if pat == 'Geen Patroon':
+                try:
+                    c = float(df_prev['Close'].iloc[-1])
+                    o = float(df_prev['Open'].iloc[-1])
+                    return '🟢 Bullish' if c >= o else '🔴 Bearish'
+                except Exception:
+                    return 'Geen Patroon'
+            return pat
+
+        # 15M data ophalen (laatste 2 dagen = genoeg voor patroonherkenning)
+        df_15m = yf.download(ticker, period='2d', interval='15m',
+                             progress=False, auto_adjust=True)
+        if df_15m is not None and len(df_15m) >= 4:
+            result['15M[0]']  = _get_pattern_and_dir(df_15m, '15M[0]')
+            result['15M[-1]'] = _get_prev_pattern_and_dir(df_15m)
+
+        # 5M data ophalen (laatste 1 dag)
+        df_5m = yf.download(ticker, period='1d', interval='5m',
+                            progress=False, auto_adjust=True)
+        if df_5m is not None and len(df_5m) >= 4:
+            result['5M[0]']  = _get_pattern_and_dir(df_5m, '5M[0]')
+            result['5M[-1]'] = _get_prev_pattern_and_dir(df_5m)
+
+    except Exception:
+        pass
+
+    return result
+
+
 @st.cache_data(ttl=CACHE_PRICE_TTL)
 def build_main_table(tickers: tuple) -> pd.DataFrame:
     """Bouw de hoofdmarkttabel op voor een lijst van tickers."""
@@ -870,8 +943,9 @@ def build_main_table(tickers: tuple) -> pd.DataFrame:
                 rows.append({
                     'Ticker': ticker, 'Koers': 'N/A', 'RSI (14D)': 'N/A',
                     'Support (30D)': 'N/A', 'Weerstand (30D)': 'N/A', 'Afwijking %': 'N/A',
-                    'Patroon': 'N/A', 'Koers Status / Fase': '⚠ Geen Data',
-                    'Actie': '⚠ Geen Data'
+                    'Patroon (1D)': 'N/A', '15M [-1]': '–', '15M [0]': '–',
+                    '5M [-1]': '–', '5M [0]': '–',
+                    'Koers Status / Fase': '⚠ Geen Data', 'Actie': '⚠ Geen Data'
                 })
                 continue
 
@@ -921,6 +995,9 @@ def build_main_table(tickers: tuple) -> pd.DataFrame:
             safe_rsi_float = float(rsi_val) if not np.isnan(rsi_val) else 50.0
             rsi_display = str(int(rsi_val)) if not np.isnan(rsi_val) else 'N/A'
 
+            # ── Intraday patronen (15M en 5M) ────────────────────────────────
+            intra = fetch_intraday_patterns(ticker)
+
             rows.append({
                 'Ticker': ticker,
                 'Koers': koers_str,
@@ -931,7 +1008,11 @@ def build_main_table(tickers: tuple) -> pd.DataFrame:
                 '_dev_float': safe_deviation,
                 '_rsi_float': safe_rsi_float,
                 '_ext_chg': change_ext if (ext_price and market_phase in ('AFTER-HOURS', 'PRE-MARKET')) else None,
-                'Patroon': pattern,
+                'Patroon (1D)': pattern,
+                '15M [-1]': intra['15M[-1]'],
+                '15M [0]':  intra['15M[0]'],
+                '5M [-1]':  intra['5M[-1]'],
+                '5M [0]':   intra['5M[0]'],
                 'Koers Status / Fase': phase,
                 'Actie': action,
             })
@@ -940,14 +1021,16 @@ def build_main_table(tickers: tuple) -> pd.DataFrame:
                 'Ticker': ticker, 'Koers': 'ERR', 'RSI (14D)': 'ERR',
                 'Support (30D)': 'ERR', 'Weerstand (30D)': 'ERR', 'Afwijking %': 'ERR',
                 '_dev_float': 999.0, '_rsi_float': 50.0, '_ext_chg': None,
-                'Patroon': 'ERR', 'Koers Status / Fase': f'⚠ Fout: {str(e)[:30]}',
-                'Actie': '⚠ Fout'
+                'Patroon (1D)': 'ERR', '15M [-1]': '–', '15M [0]': '–',
+                '5M [-1]': '–', '5M [0]': '–',
+                'Koers Status / Fase': f'⚠ Fout: {str(e)[:30]}', 'Actie': '⚠ Fout'
             })
     # Zorg dat de volledige DataFrame geen gemengde kolomtypes heeft
     df_result = pd.DataFrame(rows)
     # Forceer alle display-kolommen naar string zodat Arrow nooit crasht
     for _col in ['RSI (14D)', 'Afwijking %', 'Koers', 'Support (30D)', 'Weerstand (30D)',
-                 'Patroon', 'Koers Status / Fase', 'Actie']:
+                 'Patroon (1D)', '15M [-1]', '15M [0]', '5M [-1]', '5M [0]',
+                 'Koers Status / Fase', 'Actie']:
         if _col in df_result.columns:
             df_result[_col] = df_result[_col].astype(str)
     # _ext_chg mag None bevatten — convert naar float waarbij None → NaN
@@ -1020,16 +1103,33 @@ def style_main_table(df: pd.DataFrame) -> pd.io.formats.style.Styler:
             elif dev_v > TABLE_DEV_GOLD:
                 styles[idx] = 'background-color: #1A1500; color: #F0B90B;'
 
-        # Patroon kolom
-        if 'Patroon' in col_list:
-            idx = col_list.index('Patroon')
-            pat = str(row.get('Patroon', ''))
-            if 'Bullish' in pat:
-                styles[idx] = 'background-color: #00843A; color: #FFFFFF; font-weight:600;'
-            elif 'Bearish' in pat or 'Shooting' in pat:
-                styles[idx] = 'background-color: #A32040; color: #FFFFFF; font-weight:600;'
-            elif 'Doji' in pat:
-                styles[idx] = 'background-color: #1A1500; color: #F0B90B;'
+        # Patroon (1D) kolom
+        for pat_col in ['Patroon', 'Patroon (1D)']:
+            if pat_col in col_list:
+                idx = col_list.index(pat_col)
+                pat = str(row.get(pat_col, ''))
+                if any(p in pat for p in ['Bullish','Hammer','Morning','Soldiers','Piercing','Tweezer Bottom','Dragonfly']) and 'Bearish' not in pat:
+                    styles[idx] = 'background-color: #00843A; color: #FFFFFF; font-weight:600;'
+                elif any(p in pat for p in ['Bearish','Shooting','Evening','Crows','Dark Cloud','Hanging','Gravestone','Tweezer Top']):
+                    styles[idx] = 'background-color: #A32040; color: #FFFFFF; font-weight:600;'
+                elif 'Doji' in pat:
+                    styles[idx] = 'background-color: #1A1500; color: #F0B90B;'
+
+        # Intraday kolommen (15M en 5M)
+        for intra_col in ['15M [-1]', '15M [0]', '5M [-1]', '5M [0]']:
+            if intra_col in col_list:
+                idx = col_list.index(intra_col)
+                val_s = str(row.get(intra_col, ''))
+                if any(p in val_s for p in ['Bullish','Hammer','Morning','Soldiers','Piercing','Tweezer Bottom','Dragonfly']) and 'Bearish' not in val_s:
+                    styles[idx] = 'background-color: #0D2818; color: #00C853; font-weight:600;'
+                elif any(p in val_s for p in ['Bearish','Shooting','Evening','Crows','Dark Cloud','Hanging','Gravestone','Tweezer Top']):
+                    styles[idx] = 'background-color: #1A0008; color: #F6465D; font-weight:600;'
+                elif '🟢' in val_s:
+                    styles[idx] = 'background-color: #0D2818; color: #00C853;'
+                elif '🔴' in val_s:
+                    styles[idx] = 'background-color: #1A0008; color: #F6465D;'
+                elif 'Doji' in val_s:
+                    styles[idx] = 'background-color: #1A1500; color: #F0B90B;'
 
         # Actie kolom
         if 'Actie' in col_list:
