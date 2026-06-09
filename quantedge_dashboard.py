@@ -2127,11 +2127,9 @@ def run_scanner(strategy: str, pool: list, max_results: int = 9999) -> pd.DataFr
                 except Exception:
                     pass  # Geen nieuws → match blijft False, loop gaat door
 
-            # ── Match gevonden → MTF validatie + R:R veto + rij toevoegen ─────
+            # ── Match gevonden → R:R berekening (geen zware MTF call) ──────────
             if match:
-                mtf = compute_multi_timeframe_check(ticker)
-
-                # Bereken R:R voor dit aandeel (zelfde logica als Deep Dive)
+                # R:R berekening puur op dagdata (al gecached)
                 _safe_sup = float(df['Low'].rolling(
                     min(SUPPORT_WINDOW, len(df)), min_periods=1).min().iloc[-1])
                 _safe_res = float(df['High'].rolling(
@@ -2141,59 +2139,56 @@ def run_scanner(strategy: str, pool: list, max_results: int = 9999) -> pd.DataFr
                 if _safe_res <= last_price:
                     _safe_res = last_price * (1 + TRADE_FALLBACK_RES)
 
-                _sl_scan      = _safe_sup * (1 - TRADE_RISK_PCT)
-                _risk_scan    = last_price - _sl_scan
-                _tp3_scan     = _safe_res * (1 - TRADE_TP3_BUFFER)
-                _reward_scan  = _tp3_scan - last_price
-                _rr_scan      = round(_reward_scan / _risk_scan, 2) \
-                                 if _risk_scan > 0 and _reward_scan > 0 else 0.0
+                _sl_scan   = _safe_sup * (1 - TRADE_RISK_PCT)
+                _risk_scan = last_price - _sl_scan
+                _tp3_scan  = _safe_res * (1 - TRADE_TP3_BUFFER)
+                _rew_scan  = _tp3_scan - last_price
+                _rr_scan   = round(_rew_scan / _risk_scan, 2) \
+                             if _risk_scan > 0 and _rew_scan > 0 else 0.0
 
-                # Pas R:R veto toe — kan status naar REJECTED zetten
-                mtf = apply_rr_veto(
-                    mtf_result       = mtf,
-                    current_price    = last_price,
-                    resistance_target= _tp3_scan,
-                    actual_rr        = _rr_scan,
-                )
+                # ── Lichte MTF: alleen weektrend via dagdata (geen extra download) ─
+                # Gebruik de al gecachte dagdata ipv nieuwe 1W download
+                try:
+                    _wk_sma = close.rolling(MTF_WEEKLY_MA * 5).mean()  # ~10 weken
+                    _wk_trend = 'BULLISH' if last_price > float(_wk_sma.iloc[-1]) else 'BEARISH'
+                except Exception:
+                    _wk_trend = 'UNKNOWN'
 
-                # ── Alpha Scanner: BEARISH weektrend is normaal aan de bodem ──
-                # Een bodem-signaal heeft per definitie een bearish achtergrond.
-                # Als de R:R excellent is EN RSI oversold, override REJECTED → APPROVED.
+                # Snelle R:R check zonder volledige MTF
+                if _rr_scan < TRADE_REWARD_RATIO:
+                    _status = 'REJECTED'
+                    _rr_note = f'R:R {_rr_scan}:1 < {TRADE_REWARD_RATIO}:1'
+                elif last_price >= _tp3_scan:
+                    _status = 'REJECTED'
+                    _rr_note = 'Koers >= resistance'
+                elif _wk_trend == 'BULLISH':
+                    _status = 'APPROVED'
+                    _rr_note = f'R:R {_rr_scan}:1'
+                else:
+                    _status = 'WATCH'
+                    _rr_note = f'R:R {_rr_scan}:1'
+
+                # Alpha override: bearish trend normaal aan bodem
                 if (strategy == "alpha_scanner" and
-                        mtf['status'] == 'REJECTED' and
-                        not mtf.get('rr_veto', False) and   # R:R veto mag NIET actief zijn
-                        _rr_scan >= TRADE_REWARD_RATIO and  # R:R is voldoende
-                        rsi_val <= SCAN_ALPHA_RSI_MAX and   # RSI is oversold
-                        mtf.get('weekly_trend') == 'BEARISH'):
-                    # Bearish weektrend is de reden — dit is verwacht aan een bodem
-                    mtf = dict(mtf)  # kopie
-                    mtf['status']         = 'APPROVED'
-                    mtf['rr_veto']        = False
-                    mtf['rr_veto_reason'] = ''
-                    mtf['alpha_override'] = True
-                    mtf['alpha_override_note'] = (
-                        f'Bodem-override: bearish 1W normaal bij RSI {int(rsi_val)} '
-                        f'(R:R {_rr_scan}:1 ≥ {TRADE_REWARD_RATIO}:1)'
-                    )
-                    print(f"DEBUG ALPHA OVERRIDE: {ticker} → APPROVED "
-                          f"(RSI={int(rsi_val)}, R:R={_rr_scan})")
+                        _status in ('REJECTED', 'WATCH') and
+                        _rr_scan >= TRADE_REWARD_RATIO and
+                        rsi_val <= SCAN_ALPHA_RSI_MAX and
+                        _wk_trend == 'BEARISH'):
+                    _status = 'APPROVED'
+                    _rr_note = f'R:R {_rr_scan}:1 ⚡ Bodem-override'
 
-                rr_note = (f"⚠ {mtf['rr_veto_reason']}"
-                           if mtf.get('rr_veto') else f"R:R {_rr_scan}:1")
-
-                # Voeg override-notitie toe als Alpha bodem-override actief is
-                override_note = mtf.get('alpha_override_note', '')
+                override_note = ''
 
                 row = {
                     'Ticker':    ticker,
-                    'Koers':     str(round(last_price, 2)),   # str → geen Arrow int/float mix
-                    'RSI (14D)': str(int(rsi_val)),           # str → geen Arrow int/'N/A' mix
+                    'Koers':     str(round(last_price, 2)),
+                    'RSI (14D)': str(int(rsi_val)),
                     'R:R':       str(_rr_scan),
-                    'R:R Status':rr_note,
+                    'R:R Status':_rr_note,
                     'Patroon':   detect_candlestick_pattern(df),
-                    'MTF Status':mtf['status'],
-                    '1W Trend':  mtf['weekly_trend'],
-                    '1H Volume': mtf['hourly_volume'],
+                    'MTF Status':_status,
+                    '1W Trend':  _wk_trend,
+                    '1H Volume': '–',
                 }
                 if override_note:
                     row['⚡ Bodem Override'] = override_note
