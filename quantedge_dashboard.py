@@ -85,6 +85,13 @@ SCAN_ALPHA_VOL_SPIKE  = 0.8   # Volume ≥ 0.8× 20D gemiddelde (verlaagd: bodem
 SCAN_SR_BOUNCE_MAX    = 1.5   # Max afstand% boven support voor bounce-signaal (= SCAN_SR_DIST)
 SCAN_SR_BOUNCE_VOL    = 1.2   # Volume vandaag ≥ 1.2× gemiddelde (licht herstel volume)
 
+# Warrior Trading Momentum Scanner (Low Float Momentum)
+SCAN_WT_PRICE_MIN     = 2.0   # Min koers in USD
+SCAN_WT_PRICE_MAX     = 20.0  # Max koers in USD
+SCAN_WT_CHANGE_MIN    = 10.0  # Min dagelijkse stijging % (10%)
+SCAN_WT_RVOL_MIN      = 5.0   # Min Relative Volume vs 20D gemiddelde (5×)
+SCAN_WT_FLOAT_MAX     = 10_000_000   # Max float (10 miljoen vrij verhandelbare aandelen)
+
 # ── Candlestick patroon verhoudingen ──────────────────────────────────────────
 CANDLE_DOJI_MAX_BODY    = 0.05  # Lichaam ≤ 5% van totale range = Doji
 CANDLE_HAMMER_SHADOW    = 2     # Onderste schaduw ≥ 2× lichaam = Hammer
@@ -407,6 +414,14 @@ if 'main_market_tickers' not in st.session_state:
 
 if 'custom_watchlist' not in st.session_state:
     st.session_state.custom_watchlist = dict(DEFAULT_WATCHLIST)
+
+# Live Monitor — vastgepinde tickers voor real-time tracking
+if 'pinned_tickers' not in st.session_state:
+    st.session_state['pinned_tickers'] = []
+if 'live_monitor_active' not in st.session_state:
+    st.session_state['live_monitor_active'] = False
+if 'live_refresh_interval' not in st.session_state:
+    st.session_state['live_refresh_interval'] = 30   # seconden
 
 if 'current_alpha' not in st.session_state:
     st.session_state.current_alpha = 'NVDA'
@@ -932,8 +947,229 @@ def fetch_intraday_patterns(ticker: str) -> dict:
     return result
 
 
-@st.cache_data(ttl=CACHE_PRICE_TTL)
-def build_main_table(tickers: tuple) -> pd.DataFrame:
+@st.cache_data(ttl=60)
+def compute_15m_mean_reversion(ticker: str) -> dict:
+    """
+    15M Mean Reversion Scanner — detecteert vroegtijdige trendomkeer signalen.
+
+    Drie scenario's:
+      1. BULLISH REVERSION — Failed Breakdown:
+         Koers test/breekt Opening Range Low (ORL) of 15M support,
+         gevolgd door Morning Star / Hammer / Bullish Engulfing op hoog volume.
+
+      2. BEARISH REVERSION — Failed Breakout:
+         Koers test/breekt Opening Range High (ORH) of 15M resistance,
+         gevolgd door Evening Star / Shooting Star / Bearish Engulfing op hoog volume.
+
+      3. Volumefilter (verplicht):
+         Volume trigger-kaars >= VOL_MULTI x gemiddelde volume afgelopen 5 kaarsen.
+    """
+    VOL_MULTI      = 1.5    # Volume multiplier voor validatie
+    ORL_BUFFER_PCT = 0.003  # 0.3% buffer rond ORL/ORH voor "test"
+
+    result = {
+        'status':    'Geen Signaal',
+        'detail':    '',
+        'direction': None,   # 'BULLISH' | 'BEARISH' | None
+        'vol_ok':    False,
+        'vol_ratio': 0.0,
+        'pattern':   '',
+        'orl':       None,
+        'orh':       None,
+    }
+
+    try:
+        # ── Data ophalen ─────────────────────────────────────────────────────
+        df = yf.download(ticker, period='2d', interval='15m',
+                         progress=False, auto_adjust=True)
+        if df is None or len(df) < 6:
+            result['status'] = '– Geen data'
+            return result
+
+        if isinstance(df.columns, pd.MultiIndex):
+            df = df.copy(); df.columns = [c[0] for c in df.columns]
+        df = df.dropna(subset=['Close'])
+        if len(df) < 6:
+            result['status'] = '– Te weinig kaarsen'
+            return result
+
+        # ── Opening Range berekenen (eerste 2 kaarsen van vandaag) ───────────
+        # Haal kaarsen van vandaag op
+        today = pd.Timestamp.now().normalize()
+        try:
+            df_today = df[df.index.normalize() >= today]
+        except Exception:
+            df_today = df.iloc[-16:]   # Fallback: laatste 16 kaarsen (~4 uur)
+
+        if len(df_today) >= 2:
+            orl = float(df_today['Low'].iloc[:2].min())    # Opening Range Low
+            orh = float(df_today['High'].iloc[:2].max())   # Opening Range High
+        else:
+            # Fallback op dagelijkse min/max van beschikbare data
+            orl = float(df['Low'].iloc[-16:].min())
+            orh = float(df['High'].iloc[-16:].max())
+
+        result['orl'] = round(orl, 4)
+        result['orh'] = round(orh, 4)
+
+        # ── Huidige en vorige kaarsen ─────────────────────────────────────────
+        last  = df.iloc[-1]    # Trigger-kaars (laatste gesloten 15M kaars)
+        prev  = df.iloc[-2]    # Kaars daarvoor
+        prev2 = df.iloc[-3]    # Twee kaarsen terug
+
+        def _sc(v):
+            return float(v.iloc[0]) if hasattr(v, 'iloc') else float(v)
+
+        c_last  = _sc(last['Close']);  o_last  = _sc(last['Open'])
+        h_last  = _sc(last['High']);   l_last  = _sc(last['Low'])
+        vol_last= _sc(last['Volume'])
+
+        c_prev  = _sc(prev['Close']);  o_prev  = _sc(prev['Open'])
+        h_prev  = _sc(prev['High']);   l_prev  = _sc(prev['Low'])
+
+        c_prev2 = _sc(prev2['Close']); o_prev2 = _sc(prev2['Open'])
+
+        # ── Volume check (trigger-kaars vs gemiddelde afgelopen 5) ────────────
+        vol_5avg = float(df['Volume'].iloc[-6:-1].mean())
+        vol_ratio = round(vol_last / vol_5avg, 2) if vol_5avg > 0 else 0.0
+        vol_ok = vol_ratio >= VOL_MULTI
+        result['vol_ok']    = vol_ok
+        result['vol_ratio'] = vol_ratio
+
+        # ── Hulpvariabelen trigger-kaars ──────────────────────────────────────
+        body_last  = abs(c_last - o_last)
+        range_last = h_last - l_last if h_last - l_last > 0 else 0.0001
+        bull_last  = c_last > o_last
+        bear_last  = c_last < o_last
+        bull_prev  = c_prev > o_prev
+        bear_prev  = c_prev < o_prev
+        bull_prev2 = c_prev2 > o_prev2
+        bear_prev2 = c_prev2 < o_prev2
+
+        lower_sh = min(o_last, c_last) - l_last
+        upper_sh = h_last - max(o_last, c_last)
+
+        # ── BULLISH PATROON DETECTIE ──────────────────────────────────────────
+        bullish_pat = None
+
+        # Morning Star: bearish → kleine ster → bullish boven midden kaars 1
+        if (bear_prev2 and
+                abs(c_prev - o_prev) < abs(c_prev2 - o_prev2) * 0.4 and
+                bull_last and
+                c_last > (o_prev2 + c_prev2) / 2):
+            bullish_pat = 'Morning Star'
+
+        # Hammer: lange onderste schaduw, kleine bovenschaduw, sluit hoog
+        elif (lower_sh >= 2 * body_last and
+              upper_sh <= 0.1 * range_last and
+              c_last >= l_last + 0.75 * range_last):
+            bullish_pat = 'Hammer'
+
+        # Bullish Engulfing: vorige bearish, huidige bullish en omsluit
+        elif (bear_prev and bull_last and
+              c_last > o_prev and o_last < c_prev):
+            bullish_pat = 'Bullish Engulfing'
+
+        # Bullish Harami: kleine bullish kaars binnen grote bearish kaars
+        elif (bear_prev and bull_last and
+              o_last > c_prev and c_last < o_prev and
+              body_last < abs(c_prev - o_prev) * 0.5):
+            bullish_pat = 'Bullish Harami'
+
+        # Inverted Hammer (na daling)
+        elif (upper_sh >= 2 * body_last and
+              lower_sh <= 0.1 * range_last and
+              bear_prev):
+            bullish_pat = 'Inverted Hammer'
+
+        # ── BEARISH PATROON DETECTIE ──────────────────────────────────────────
+        bearish_pat = None
+
+        # Evening Star: bullish → kleine ster → bearish onder midden kaars 1
+        if (bull_prev2 and
+                abs(c_prev - o_prev) < abs(c_prev2 - o_prev2) * 0.4 and
+                bear_last and
+                c_last < (o_prev2 + c_prev2) / 2):
+            bearish_pat = 'Evening Star'
+
+        # Shooting Star: lange bovenschaduw, sluit laag
+        elif (upper_sh >= 2 * body_last and
+              lower_sh <= 0.1 * range_last and
+              c_last <= l_last + 0.35 * range_last):
+            bearish_pat = 'Shooting Star'
+
+        # Bearish Engulfing
+        elif (bull_prev and bear_last and
+              c_last < o_prev and o_last > c_prev):
+            bearish_pat = 'Bearish Engulfing'
+
+        # Bearish Harami
+        elif (bull_prev and bear_last and
+              o_last < c_prev and c_last > o_prev and
+              body_last < abs(c_prev - o_prev) * 0.5):
+            bearish_pat = 'Bearish Harami'
+
+        # Hanging Man (na stijging)
+        elif (lower_sh >= 2 * body_last and
+              upper_sh <= 0.1 * range_last and
+              bull_prev):
+            bearish_pat = 'Hanging Man'
+
+        # ── REVERSION SIGNAAL BEPALEN ─────────────────────────────────────────
+        # Bullish reversion: bullish patroon NA test van ORL
+        if bullish_pat:
+            # Test van ORL: laagste punt van vorige/huidige kaars <= ORL + buffer
+            tested_orl = (l_prev <= orl * (1 + ORL_BUFFER_PCT) or
+                          l_last  <= orl * (1 + ORL_BUFFER_PCT))
+            if tested_orl:
+                status = f'🟢 BULLISH REVERSION [{bullish_pat}]'
+                if vol_ok:
+                    status += f' ✅ Vol {vol_ratio}x'
+                else:
+                    status += f' ⚠ Vol {vol_ratio}x (laag)'
+                result['status']    = status
+                result['direction'] = 'BULLISH'
+                result['pattern']   = bullish_pat
+                result['detail']    = f'ORL={orl:.2f} getest · {bullish_pat} · Vol {vol_ratio}x'
+                return result
+            else:
+                # Bullish patroon maar geen ORL-test → zwakker signaal
+                if vol_ok:
+                    result['status']    = f'🟡 BULLISH SETUP [{bullish_pat}] · Vol {vol_ratio}x'
+                    result['direction'] = 'BULLISH'
+                    result['pattern']   = bullish_pat
+                    result['detail']    = f'Geen ORL-test · {bullish_pat} · Vol {vol_ratio}x'
+
+        # Bearish reversion: bearish patroon NA test van ORH
+        if bearish_pat:
+            tested_orh = (h_prev >= orh * (1 - ORL_BUFFER_PCT) or
+                          h_last  >= orh * (1 - ORL_BUFFER_PCT))
+            if tested_orh:
+                status = f'🔴 BEARISH REVERSION [{bearish_pat}]'
+                if vol_ok:
+                    status += f' ✅ Vol {vol_ratio}x'
+                else:
+                    status += f' ⚠ Vol {vol_ratio}x (laag)'
+                result['status']    = status
+                result['direction'] = 'BEARISH'
+                result['pattern']   = bearish_pat
+                result['detail']    = f'ORH={orh:.2f} getest · {bearish_pat} · Vol {vol_ratio}x'
+                return result
+            else:
+                if vol_ok and result['direction'] != 'BULLISH':
+                    result['status']    = f'🟡 BEARISH SETUP [{bearish_pat}] · Vol {vol_ratio}x'
+                    result['direction'] = 'BEARISH'
+                    result['pattern']   = bearish_pat
+                    result['detail']    = f'Geen ORH-test · {bearish_pat} · Vol {vol_ratio}x'
+
+        # Geen patroon gevonden
+        if result['direction'] is None:
+            result['status'] = '⚪ Geen Signaal'
+
+    except Exception as e:
+        result['status'] = f'– Fout: {str(e)[:30]}'
+
+    return result
     """Bouw de hoofdmarkttabel op voor een lijst van tickers."""
     rows = []
     for ticker in tickers:
@@ -944,7 +1180,7 @@ def build_main_table(tickers: tuple) -> pd.DataFrame:
                     'Ticker': ticker, 'Koers': 'N/A', 'RSI (14D)': 'N/A',
                     'Support (30D)': 'N/A', 'Weerstand (30D)': 'N/A', 'Afwijking %': 'N/A',
                     'Patroon (1D)': 'N/A', '15M [-1]': '–', '15M [0]': '–',
-                    '5M [-1]': '–', '5M [0]': '–',
+                    '5M [-1]': '–', '5M [0]': '–', '15M MR Status': '–', '_mr15_dir': '',
                     'Koers Status / Fase': '⚠ Geen Data', 'Actie': '⚠ Geen Data'
                 })
                 continue
@@ -997,6 +1233,7 @@ def build_main_table(tickers: tuple) -> pd.DataFrame:
 
             # ── Intraday patronen (15M en 5M) ────────────────────────────────
             intra = fetch_intraday_patterns(ticker)
+            mr15  = compute_15m_mean_reversion(ticker)
 
             rows.append({
                 'Ticker': ticker,
@@ -1013,6 +1250,8 @@ def build_main_table(tickers: tuple) -> pd.DataFrame:
                 '15M [0]':  intra['15M[0]'],
                 '5M [-1]':  intra['5M[-1]'],
                 '5M [0]':   intra['5M[0]'],
+                '15M MR Status': mr15['status'],
+                '_mr15_dir': mr15['direction'] or '',
                 'Koers Status / Fase': phase,
                 'Actie': action,
             })
@@ -1022,7 +1261,7 @@ def build_main_table(tickers: tuple) -> pd.DataFrame:
                 'Support (30D)': 'ERR', 'Weerstand (30D)': 'ERR', 'Afwijking %': 'ERR',
                 '_dev_float': 999.0, '_rsi_float': 50.0, '_ext_chg': None,
                 'Patroon (1D)': 'ERR', '15M [-1]': '–', '15M [0]': '–',
-                '5M [-1]': '–', '5M [0]': '–',
+                '5M [-1]': '–', '5M [0]': '–', '15M MR Status': '–', '_mr15_dir': '',
                 'Koers Status / Fase': f'⚠ Fout: {str(e)[:30]}', 'Actie': '⚠ Fout'
             })
     # Zorg dat de volledige DataFrame geen gemengde kolomtypes heeft
@@ -1030,7 +1269,7 @@ def build_main_table(tickers: tuple) -> pd.DataFrame:
     # Forceer alle display-kolommen naar string zodat Arrow nooit crasht
     for _col in ['RSI (14D)', 'Afwijking %', 'Koers', 'Support (30D)', 'Weerstand (30D)',
                  'Patroon (1D)', '15M [-1]', '15M [0]', '5M [-1]', '5M [0]',
-                 'Koers Status / Fase', 'Actie']:
+                 '15M MR Status', 'Koers Status / Fase', 'Actie']:
         if _col in df_result.columns:
             df_result[_col] = df_result[_col].astype(str)
     # _ext_chg mag None bevatten — convert naar float waarbij None → NaN
@@ -1130,6 +1369,31 @@ def style_main_table(df: pd.DataFrame) -> pd.io.formats.style.Styler:
                     styles[idx] = 'background-color: #1A0008; color: #F6465D;'
                 elif 'Doji' in val_s:
                     styles[idx] = 'background-color: #1A1500; color: #F0B90B;'
+
+        # 15M Mean Reversion Status kolom
+        if '15M MR Status' in col_list:
+            idx = col_list.index('15M MR Status')
+            mr_val = str(row.get('15M MR Status', ''))
+            if 'BULLISH REVERSION' in mr_val and '✅' in mr_val:
+                # Sterk bevestigd bullish signaal
+                styles[idx] = ('background-color: #00843A; color: #FFFFFF; '
+                                'font-weight: 700; font-size: 0.78rem;')
+            elif 'BULLISH REVERSION' in mr_val:
+                # Bullish maar volume laag
+                styles[idx] = ('background-color: #0D2818; color: #00C853; '
+                                'font-weight: 600; font-size: 0.78rem;')
+            elif 'BEARISH REVERSION' in mr_val and '✅' in mr_val:
+                # Sterk bevestigd bearish signaal
+                styles[idx] = ('background-color: #A32040; color: #FFFFFF; '
+                                'font-weight: 700; font-size: 0.78rem;')
+            elif 'BEARISH REVERSION' in mr_val:
+                # Bearish maar volume laag
+                styles[idx] = ('background-color: #1A0008; color: #F6465D; '
+                                'font-weight: 600; font-size: 0.78rem;')
+            elif 'SETUP' in mr_val:
+                # Opbouwend signaal (patroon aanwezig, geen ORL/ORH-test)
+                styles[idx] = ('background-color: #1A1500; color: #F0B90B; '
+                                'font-weight: 600; font-size: 0.78rem;')
 
         # Actie kolom
         if 'Actie' in col_list:
@@ -1753,7 +2017,61 @@ def run_scanner(strategy: str, pool: list, max_results: int = 9999) -> pd.DataFr
                         'Kaars':           '🟢 Groen herstel',
                     }
 
-            elif strategy == "event_sentiment":
+            elif strategy == "momentum_low_float":
+                # ── Warrior Trading Momentum Scanner ─────────────────────────
+                # 4 harde poorten — alle 4 moeten waar zijn:
+                #
+                #   1. PRICE RANGE    : $2.00 ≤ koers ≤ $20.00 USD
+                #   2. DAILY CHANGE   : vandaag ≥ +10% t.o.v. vorige slotkoers
+                #   3. REL. VOLUME    : RVOL ≥ 5× 20D gemiddelde (institutioneel)
+                #   4. FLOAT          : vrij verhandelbare aandelen < 10M
+                #
+                # Alleen USD-genoteerde aandelen (geen Europese tickers).
+
+                # Poort 1 — prijsrange $2-$20
+                if not (SCAN_WT_PRICE_MIN <= last_price <= SCAN_WT_PRICE_MAX):
+                    continue
+
+                # Poort 2 — dagelijkse stijging ≥ 10%
+                if len(close) < 2:
+                    continue
+                prev_close   = float(close.iloc[-2])
+                daily_change = ((last_price - prev_close) / prev_close * 100) if prev_close > 0 else 0.0
+                if daily_change < SCAN_WT_CHANGE_MIN:
+                    continue
+
+                # Poort 3 — Relative Volume ≥ 5×
+                vol_20d_avg_wt = float(volume.rolling(20).mean().iloc[-1])
+                vol_today_wt   = float(volume.iloc[-1])
+                rvol = round(vol_today_wt / vol_20d_avg_wt, 2) if vol_20d_avg_wt > 0 else 0.0
+                if rvol < SCAN_WT_RVOL_MIN:
+                    continue
+
+                # Poort 4 — Float < 10 miljoen (via yfinance info)
+                try:
+                    t_info   = yf.Ticker(ticker).info
+                    float_sh = t_info.get('floatShares', None)
+                    if float_sh is None or float_sh <= 0:
+                        # Float niet beschikbaar — gebruik shares outstanding als proxy
+                        float_sh = t_info.get('sharesOutstanding', None)
+                    if float_sh is None:
+                        continue    # Geen data → skip
+                    if float_sh >= SCAN_WT_FLOAT_MAX:
+                        continue    # Te grote float
+                    market_cap = t_info.get('marketCap', 0) or 0
+                except Exception:
+                    continue
+
+                # ✅ Alle 4 poorten gehaald → MOMENTUM KANDIDAAT
+                match = True
+                float_m = round(float_sh / 1_000_000, 2)
+                extra_info = {
+                    'Dagstijging %': f"+{daily_change:.1f}%",
+                    'RVOL':          f"{rvol}×",
+                    'Float':         f"{float_m}M aandelen",
+                    'Vol Vandaag':   f"{int(vol_today_wt):,}",
+                    'Label':         '🔥 MOMENTUM KANDIDAAT',
+                }
                 # Poort 1 — Hard volume veto (institutioneel geld verplicht)
                 vol_20d_avg = float(volume.rolling(VOL_MA_PERIOD).mean().iloc[-1])
                 vol_today   = float(volume.iloc[-1])
@@ -2351,6 +2669,7 @@ main_tabs = st.tabs([
     "📊 Market Tracker",
     "🔍 Multi-Strategie Scanner",
     "📈 Deep Dive & Grafiek",
+    "📡 Live Monitor",
 ])
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -2715,6 +3034,7 @@ with main_tabs[1]:
         | 📰 **Event Sentiment** | Hard volume veto {SCAN_SENT_VOL_SPIKE}× + sentiment score > {SCAN_SENT_SCORE_BULL}/< {SCAN_SENT_SCORE_BEAR} + ≥{SCAN_SENT_NEWS_MIN} nieuws |
         | 🔎 **Alpha Scanner** | RSI ≤ {SCAN_ALPHA_RSI_MAX} (oversold) · koers {SCAN_ALPHA_DEV_MIN}-{SCAN_ALPHA_DEV_MAX}% boven support · volume ≥ {SCAN_ALPHA_VOL_SPIKE}× (laag ok = accumulatie) |
         | 🧱 **S/R Bounce Scanner** | Koers 0-{SCAN_SR_BOUNCE_MAX}% boven support · groene herstelkaars · volume ≥ {SCAN_SR_BOUNCE_VOL}× |
+        | 🔥 **Low Float Momentum** | Warrior Trading: koers ${SCAN_WT_PRICE_MIN}-${SCAN_WT_PRICE_MAX} · dagstijging ≥{SCAN_WT_CHANGE_MIN}% · RVOL ≥{SCAN_WT_RVOL_MIN}× · float <{SCAN_WT_FLOAT_MAX//1_000_000}M |
 
         **Alpha vs S/R Bounce verschil:**
         - *Alpha Scanner*: diep oversold (RSI < {SCAN_ALPHA_RSI_MAX}), vroeg instapmoment aan de bodem
@@ -2749,9 +3069,13 @@ with main_tabs[1]:
             "🧱 S/R Bounce Scanner",
             f"Pullback Springplank: koers 0-{SCAN_SR_BOUNCE_MAX}% boven support · groene herstelkaars · volume ≥ {SCAN_SR_BOUNCE_VOL}×"
         ),
+        "momentum_low_float": (
+            "🔥 Low Float Momentum",
+            f"Warrior Trading: koers ${SCAN_WT_PRICE_MIN}-${SCAN_WT_PRICE_MAX} · dagstijging ≥{SCAN_WT_CHANGE_MIN}% · RVOL ≥{SCAN_WT_RVOL_MIN}× · float <{SCAN_WT_FLOAT_MAX//1_000_000}M"
+        ),
     }
 
-    # Twee rijen van 3 knoppen
+    # Twee rijen: 3 + 4
     row1_keys = list(strategy_map.keys())[:3]
     row2_keys = list(strategy_map.keys())[3:]
 
@@ -2759,16 +3083,15 @@ with main_tabs[1]:
     for i, sk in enumerate(row1_keys):
         label, tooltip = strategy_map[sk]
         with btn_row1[i]:
-            active_style = "primary" if st.session_state.active_strategy == sk else "secondary"
-            if st.button(label, key=f"scan_btn_{sk}", help=tooltip):
+            if st.button(label, key=f"scan_btn_{sk}", help=tooltip, use_container_width=True):
                 st.session_state.active_strategy = sk
                 st.session_state.scanner_results = pd.DataFrame()
 
-    btn_row2 = st.columns(3)
+    btn_row2 = st.columns(4)
     for i, sk in enumerate(row2_keys):
         label, tooltip = strategy_map[sk]
         with btn_row2[i]:
-            if st.button(label, key=f"scan_btn_{sk}", help=tooltip):
+            if st.button(label, key=f"scan_btn_{sk}", help=tooltip, use_container_width=True):
                 st.session_state.active_strategy = sk
                 st.session_state.scanner_results = pd.DataFrame()
 
@@ -2836,10 +3159,10 @@ with main_tabs[1]:
             st.markdown("---")
             all_tickers_scan = df_scan['Ticker'].tolist()
             if all_tickers_scan:
-                dd_sc1, dd_sc2 = st.columns([3, 1])
+                dd_sc1, dd_sc2, dd_sc3 = st.columns([3, 1, 1])
                 with dd_sc1:
                     selected_scan = st.selectbox(
-                        "🔭 Selecteer voor Deep Dive →",
+                        "🔭 Selecteer voor Deep Dive / Live Monitor →",
                         options=all_tickers_scan,
                         key="scan_deep_dive_select"
                     )
@@ -2848,6 +3171,35 @@ with main_tabs[1]:
                     if st.button("📈 Open Deep Dive", key="btn_scan_to_deep_dive"):
                         st.session_state.current_alpha = selected_scan
                         st.success(f"✅ {selected_scan} geladen → ga naar '📈 Deep Dive & Grafiek'")
+                with dd_sc3:
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    if st.button("📌 Pin naar Live Monitor", key="btn_pin_from_scan"):
+                        if selected_scan not in st.session_state['pinned_tickers']:
+                            st.session_state['pinned_tickers'].append(selected_scan)
+                            st.success(f"📌 {selected_scan} vastgezet in Live Monitor!")
+                        else:
+                            st.info(f"{selected_scan} staat al in de Live Monitor.")
+
+            # Snel alle hits pinnen
+            if all_tickers_scan:
+                with st.expander("📌 Pin meerdere tickers naar Live Monitor", expanded=False):
+                    pin_options = [t for t in all_tickers_scan
+                                   if t not in st.session_state['pinned_tickers']]
+                    if pin_options:
+                        selected_pins = st.multiselect(
+                            "Selecteer tickers om vast te zetten:",
+                            options=pin_options,
+                            key="multipin_select"
+                        )
+                        if st.button("📌 Pin geselecteerde tickers", key="btn_multipin"):
+                            for t in selected_pins:
+                                if t not in st.session_state['pinned_tickers']:
+                                    st.session_state['pinned_tickers'].append(t)
+                            if selected_pins:
+                                st.success(f"✅ {len(selected_pins)} tickers vastgezet!")
+                                st.rerun()
+                    else:
+                        st.info("Alle hits zijn al vastgezet in de Live Monitor.")
         else:
             st.info("Klik op '▶ Start Scan' om te beginnen.")
     else:
@@ -2855,6 +3207,285 @@ with main_tabs[1]:
 
     st.markdown('</div>', unsafe_allow_html=True)
 
+
+# ═════════════════════════════════════════════════════════════════════════════
+# TAB 4: LIVE MONITOR — Real-time tracking van vastgepinde tickers
+# ═════════════════════════════════════════════════════════════════════════════
+with main_tabs[3]:
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+
+    # ── Header ────────────────────────────────────────────────────────────────
+    lm_h1, lm_h2 = st.columns([3, 1])
+    with lm_h1:
+        st.markdown("### 📡 Live Monitor — Real-Time Prijsactie")
+        st.markdown('<small style="color:#848E9C;">Vastgepinde tickers · Auto-refresh · 15M MR Status · After-hours</small>', unsafe_allow_html=True)
+    with lm_h2:
+        n_pinned = len(st.session_state['pinned_tickers'])
+        st.metric("📌 Vastgezet", n_pinned)
+
+    st.markdown("---")
+
+    # ── Auto-refresh configuratie ─────────────────────────────────────────────
+    try:
+        from streamlit_autorefresh import st_autorefresh
+        autorefresh_available = True
+    except ImportError:
+        autorefresh_available = False
+
+    ctrl1, ctrl2, ctrl3 = st.columns([1, 1, 2])
+    with ctrl1:
+        refresh_interval = st.selectbox(
+            "🔄 Refresh interval",
+            options=[15, 30, 60, 120, 300],
+            format_func=lambda x: f"{x}s" if x < 60 else f"{x//60}m",
+            index=1,
+            key="lm_refresh_interval"
+        )
+    with ctrl2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        monitor_active = st.toggle("▶ Auto-refresh AAN", value=True, key="lm_active")
+    with ctrl3:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("🔄 Nu vernieuwen", key="btn_lm_manual_refresh"):
+            st.cache_data.clear()
+            st.rerun()
+
+    # Auto-refresh via streamlit-autorefresh indien beschikbaar
+    if autorefresh_available and monitor_active:
+        count = st_autorefresh(
+            interval=refresh_interval * 1000,
+            limit=None,
+            key="live_monitor_refresh"
+        )
+    else:
+        if monitor_active and not autorefresh_available:
+            st.caption("⚠ streamlit-autorefresh niet beschikbaar — gebruik 'Nu vernieuwen'")
+
+    # ── Ticker beheer ──────────────────────────────────────────────────────────
+    lm_add1, lm_add2, lm_add3 = st.columns([2, 1, 1])
+    with lm_add1:
+        manual_pin = st.text_input(
+            "➕ Ticker handmatig toevoegen",
+            placeholder="bijv. NVDA, AMD, TSLA...",
+            key="lm_manual_pin_input"
+        )
+    with lm_add2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("📌 Vastzetten", key="btn_lm_add"):
+            t = manual_pin.strip().upper()
+            if t and t not in st.session_state['pinned_tickers']:
+                st.session_state['pinned_tickers'].append(t)
+                st.rerun()
+    with lm_add3:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("🗑 Alles verwijderen", key="btn_lm_clear"):
+            st.session_state['pinned_tickers'] = []
+            st.rerun()
+
+    # ── Live tabel ────────────────────────────────────────────────────────────
+    if not st.session_state['pinned_tickers']:
+        st.info("📌 Geen tickers vastgezet. Pin tickers via de Scanner of voeg ze hierboven toe.")
+    else:
+        pinned = st.session_state['pinned_tickers']
+
+        # Tijdstempel laatste update
+        now_str = pd.Timestamp.now().strftime("%H:%M:%S")
+        st.markdown(
+            f"<div style='font-family:monospace;font-size:0.75rem;color:#848E9C;"
+            f"margin-bottom:8px;'>Laatste update: <b style='color:#F0B90B;'>{now_str}</b>"
+            f" · {len(pinned)} tickers · interval: {refresh_interval}s</div>",
+            unsafe_allow_html=True
+        )
+
+        # ── Data ophalen per ticker ───────────────────────────────────────────
+        @st.cache_data(ttl=refresh_interval)
+        def fetch_live_monitor_row(ticker: str) -> dict:
+            """Haal alle live data op voor één ticker — gecached op refresh_interval."""
+            row = {
+                'Ticker': ticker, 'Koers': '–', 'Δ Dag%': '–', 'RSI': '–',
+                'Support': '–', 'Weerstand': '–', 'Afw%': '–',
+                '15M MR': '–', '15M [0]': '–', '5M [0]': '–',
+                'Fase': '–', 'Actie': '–',
+                '_rsi': 50.0, '_dev': 999.0, '_ext_chg': None,
+                '_action': '', '_mr_dir': '',
+            }
+            try:
+                df, info = fetch_ticker_data(ticker, period='5d')
+                if df is None or len(df) < 3:
+                    return row
+
+                close = df['Close'].squeeze()
+                lp    = float(close.iloc[-1])
+                prev  = float(close.iloc[-2]) if len(close) >= 2 else lp
+                dc    = round((lp - prev) / prev * 100, 2) if prev > 0 else 0.0
+                rsi_v = compute_rsi(close)
+                sup, res = compute_support_resistance(df, SUPPORT_WINDOW, current_price=lp)
+                dev   = round((lp - sup) / sup * 100, 2) if sup > 0 else 0.0
+                pat   = detect_candlestick_pattern(df)
+                phase = determine_phase(rsi_v, dev, pat)
+                act   = determine_action(rsi_v, dev, pat, phase)
+
+                cur = info.get('currency', '') if info else ''
+                sym = '€' if cur == 'EUR' else '$' if cur == 'USD' else ''
+
+                # Live prijs incl. extended hours
+                live = fetch_live_price(ticker)
+                dp   = live['price'] if live['price'] else lp
+                mp   = live['market_phase']
+                ce   = live['change_ext']
+
+                badge = ''
+                if mp == 'AFTER-HOURS': badge = ' 🌙'
+                elif mp == 'PRE-MARKET': badge = ' 🌅'
+
+                koers_str = f"{sym}{dp:,.2f}{badge}"
+                dc_str    = f"{'▲' if dc >= 0 else '▼'}{abs(dc):.2f}%"
+
+                # Intraday
+                intra = fetch_intraday_patterns(ticker)
+                mr15  = compute_15m_mean_reversion(ticker)
+
+                row.update({
+                    'Ticker':   ticker,
+                    'Koers':    koers_str,
+                    'Δ Dag%':   dc_str,
+                    'RSI':      str(int(rsi_v)) if not math.isnan(rsi_v) else 'N/A',
+                    'Support':  f"{sym}{sup:,.2f}",
+                    'Weerstand':f"{sym}{res:,.2f}",
+                    'Afw%':     f"{dev:.2f}",
+                    '15M MR':   mr15['status'],
+                    '15M [0]':  intra['15M[0]'],
+                    '5M [0]':   intra['5M[0]'],
+                    'Fase':     phase,
+                    'Actie':    act,
+                    '_rsi':     float(rsi_v) if not math.isnan(rsi_v) else 50.0,
+                    '_dev':     dev,
+                    '_ext_chg': ce,
+                    '_action':  act,
+                    '_mr_dir':  mr15.get('direction') or '',
+                })
+            except Exception:
+                pass
+            return row
+
+        # Haal alle rijen op
+        lm_rows = [fetch_live_monitor_row(t) for t in pinned]
+
+        # ── Render als kaartjes (compacter dan tabel op mobiel) ───────────────
+        use_cards = st.session_state.get('mobile_view', False)
+
+        if use_cards:
+            # Mobiele kaartjes weergave
+            for r in lm_rows:
+                action = r['_action']
+                mr_dir = r['_mr_dir']
+                if 'KOOPWAARDIG' in action:   card_border = '#00C853'
+                elif 'VOORZICHTIG' in action:  card_border = '#F6465D'
+                elif 'BULLISH' in mr_dir:      card_border = '#00C853'
+                elif 'BEARISH' in mr_dir:      card_border = '#F6465D'
+                else:                          card_border = '#2B3139'
+
+                mr_color = '#00C853' if 'BULLISH' in r['15M MR'] else '#F6465D' if 'BEARISH' in r['15M MR'] else '#848E9C'
+
+                st.markdown(f"""
+                <div style="background:#13171C;border:1px solid {card_border};border-left:4px solid {card_border};
+                            border-radius:6px;padding:10px 14px;margin-bottom:8px;">
+                  <div style="display:flex;justify-content:space-between;align-items:center;">
+                    <b style="color:#F0B90B;font-size:1.1rem;">{r['Ticker']}</b>
+                    <span style="color:#E8ECEF;font-size:1.1rem;">{r['Koers']}</span>
+                    <span style="color:{'#00C853' if '▲' in r['Δ Dag%'] else '#F6465D'};">{r['Δ Dag%']}</span>
+                  </div>
+                  <div style="display:flex;gap:12px;margin-top:6px;font-size:0.78rem;">
+                    <span style="color:#848E9C;">RSI: <b style="color:#E8ECEF;">{r['RSI']}</b></span>
+                    <span style="color:#848E9C;">Afw: <b style="color:#E8ECEF;">{r['Afw%']}%</b></span>
+                    <span style="color:#848E9C;">Actie: <b style="color:{'#00C853' if 'KOOPWAARDIG' in r['Actie'] else '#F6465D' if 'VOORZICHTIG' in r['Actie'] else '#F0B90B'};">{r['Actie']}</b></span>
+                  </div>
+                  <div style="margin-top:4px;font-size:0.72rem;color:{mr_color};">{r['15M MR']}</div>
+                </div>""", unsafe_allow_html=True)
+        else:
+            # Desktop tabel-weergave
+            lm_df = pd.DataFrame(lm_rows)
+            display_cols = ['Ticker','Koers','Δ Dag%','RSI','Support','Weerstand',
+                            'Afw%','15M MR','15M [0]','5M [0]','Fase','Actie']
+            display_cols = [c for c in display_cols if c in lm_df.columns]
+            lm_display = lm_df[display_cols].copy()
+
+            def style_lm(df):
+                def rs(row):
+                    base  = f'background-color:#13171C;color:#E8ECEF;'
+                    styles= [base]*len(row)
+                    cl    = list(row.index)
+
+                    action= str(row.get('Actie',''))
+                    mr    = str(row.get('15M MR',''))
+                    dc    = str(row.get('Δ Dag%',''))
+                    orig  = lm_df[lm_df['Ticker']==row.get('Ticker','')]
+                    rsi_f = float(orig['_rsi'].iloc[0]) if not orig.empty else 50.0
+                    dev_f = float(orig['_dev'].iloc[0]) if not orig.empty else 999.0
+
+                    # Dag% kleur
+                    if 'Δ Dag%' in cl:
+                        idx=cl.index('Δ Dag%')
+                        styles[idx]= f'background-color:#13171C;color:{"#00C853" if "▲" in dc else "#F6465D"};font-weight:600;'
+
+                    # RSI
+                    if 'RSI' in cl:
+                        idx=cl.index('RSI')
+                        if rsi_f < TABLE_RSI_GREEN:   styles[idx]='background-color:#00843A;color:#FFF;font-weight:600;'
+                        elif rsi_f > TABLE_RSI_RED:   styles[idx]='background-color:#A32040;color:#FFF;font-weight:600;'
+
+                    # Afw%
+                    if 'Afw%' in cl:
+                        idx=cl.index('Afw%')
+                        if dev_f < TABLE_DEV_GREEN:   styles[idx]='background-color:#00843A;color:#FFF;font-weight:600;'
+
+                    # Support/Weerstand
+                    if 'Support'   in cl: styles[cl.index('Support')]   = 'color:#64B5F6;'
+                    if 'Weerstand' in cl: styles[cl.index('Weerstand')] = 'color:#CE93D8;'
+
+                    # 15M MR
+                    if '15M MR' in cl:
+                        idx=cl.index('15M MR')
+                        if 'BULLISH REVERSION' in mr and '✅' in mr:
+                            styles[idx]='background-color:#00843A;color:#FFF;font-weight:700;font-size:0.72rem;'
+                        elif 'BULLISH REVERSION' in mr:
+                            styles[idx]='background-color:#0D2818;color:#00C853;font-weight:600;font-size:0.72rem;'
+                        elif 'BEARISH REVERSION' in mr and '✅' in mr:
+                            styles[idx]='background-color:#A32040;color:#FFF;font-weight:700;font-size:0.72rem;'
+                        elif 'BEARISH REVERSION' in mr:
+                            styles[idx]='background-color:#1A0008;color:#F6465D;font-weight:600;font-size:0.72rem;'
+                        elif 'SETUP' in mr:
+                            styles[idx]='background-color:#1A1500;color:#F0B90B;font-size:0.72rem;'
+
+                    # Actie
+                    if 'Actie' in cl:
+                        idx=cl.index('Actie')
+                        if 'KOOPWAARDIG' in action:   styles[idx]='background-color:#00843A;color:#FFF;font-weight:700;'
+                        elif 'VOORZICHTIG' in action: styles[idx]='background-color:#A32040;color:#FFF;font-weight:600;'
+                        elif 'AANHOUDEN' in action:   styles[idx]='background-color:#1A1500;color:#F0B90B;font-weight:600;'
+                    return styles
+
+                return df.style.apply(rs, axis=1)
+
+            st.dataframe(style_lm(lm_display), width='stretch', height=min(600, 60+len(lm_rows)*38))
+
+        # ── Ticker verwijderen ─────────────────────────────────────────────────
+        st.markdown("---")
+        rm1, rm2 = st.columns([3, 1])
+        with rm1:
+            to_remove = st.selectbox(
+                "🗑 Ticker losmaken",
+                options=["— Selecteer —"] + list(st.session_state['pinned_tickers']),
+                key="lm_remove_select"
+            )
+        with rm2:
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("Verwijderen", key="btn_lm_remove"):
+                if to_remove != "— Selecteer —":
+                    st.session_state['pinned_tickers'].remove(to_remove)
+                    st.rerun()
+
+    st.markdown('</div>', unsafe_allow_html=True)
 
 # ═════════════════════════════════════════════════════════════════════════════
 # TAB 3: DEEP DIVE & INTERACTIEVE GRAFIEK
