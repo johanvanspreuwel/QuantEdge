@@ -3115,6 +3115,9 @@ with main_tabs[1]:
             if st.button(label, key=f"scan_btn_{sk}", help=tooltip, width='stretch'):
                 st.session_state.active_strategy = sk
                 st.session_state.scanner_results = pd.DataFrame()
+                st.session_state['scan_running'] = False
+                st.session_state['scan_rows']    = []
+                st.session_state['scan_offset']  = 0
 
     btn_row2 = st.columns(4)
     for i, sk in enumerate(row2_keys):
@@ -3123,6 +3126,9 @@ with main_tabs[1]:
             if st.button(label, key=f"scan_btn_{sk}", help=tooltip, width='stretch'):
                 st.session_state.active_strategy = sk
                 st.session_state.scanner_results = pd.DataFrame()
+                st.session_state['scan_running'] = False
+                st.session_state['scan_rows']    = []
+                st.session_state['scan_offset']  = 0
 
     if st.session_state.active_strategy:
         _active = st.session_state.active_strategy
@@ -3135,17 +3141,33 @@ with main_tabs[1]:
 
         sc1, sc2 = st.columns([1, 3])
         with sc1:
-            if st.button(f"▶ Start Volledige Scan", key="btn_start_scan"):
-                pool = load_ticker_pool()
-                st.info(f"🔍 Scan gestart: **{len(pool)} tickers** worden doorlopen...")
-                results = run_scanner(
-                    st.session_state.active_strategy,
-                    pool,
-                )
-                st.session_state.scanner_results = results
+            # Batch scanner — verwerkt 50 tickers per keer
+            BATCH_SIZE = 50
+
+            # Initialiseer scan-state
+            if 'scan_pool'    not in st.session_state: st.session_state['scan_pool']    = []
+            if 'scan_offset'  not in st.session_state: st.session_state['scan_offset']  = 0
+            if 'scan_rows'    not in st.session_state: st.session_state['scan_rows']    = []
+            if 'scan_running' not in st.session_state: st.session_state['scan_running'] = False
+
+            col_btn1, col_btn2 = st.columns(2)
+            with col_btn1:
+                if st.button("▶ Start / Hervat Scan", key="btn_start_scan"):
+                    if not st.session_state['scan_running']:
+                        # Nieuwe scan starten
+                        pool = load_ticker_pool()
+                        st.session_state['scan_pool']    = pool
+                        st.session_state['scan_offset']  = 0
+                        st.session_state['scan_rows']    = []
+                        st.session_state.scanner_results = pd.DataFrame()
+                    st.session_state['scan_running'] = True
+                    st.rerun()
+
+            with col_btn2:
+                if st.button("⏹ Stop", key="btn_stop_scan"):
+                    st.session_state['scan_running'] = False
 
         with sc2:
-            # Toon pool-grootte en scrape-status
             pool_n = st.session_state.get('total_ticker_count', '?')
             scrape_info = st.session_state.get('pool_scrape_status', '')
             st.markdown(
@@ -3158,6 +3180,42 @@ with main_tabs[1]:
                 f"</div>",
                 unsafe_allow_html=True
             )
+
+        # ── Batch verwerking ──────────────────────────────────────────────────
+        if st.session_state.get('scan_running') and st.session_state.get('scan_pool'):
+            pool    = st.session_state['scan_pool']
+            offset  = st.session_state['scan_offset']
+            total   = len(pool)
+            batch   = pool[offset:offset + BATCH_SIZE]
+
+            if not batch:
+                # Scan klaar
+                st.session_state['scan_running'] = False
+                if st.session_state['scan_rows']:
+                    st.session_state.scanner_results = pd.DataFrame(st.session_state['scan_rows'])
+            else:
+                pct = min(offset / total, 1.0)
+                hits_so_far = len(st.session_state['scan_rows'])
+                st.progress(pct,
+                    text=f"⏳ Batch {offset//BATCH_SIZE + 1} · {offset}/{total} tickers · {hits_so_far} hits")
+
+                # Verwerk batch
+                new_rows = run_scanner(
+                    st.session_state.active_strategy,
+                    batch,
+                )
+
+                if not new_rows.empty:
+                    st.session_state['scan_rows'].extend(new_rows.to_dict('records'))
+
+                # Volgende batch instellen en rerun
+                st.session_state['scan_offset'] = offset + BATCH_SIZE
+
+                # Tussentijdse resultaten tonen
+                if st.session_state['scan_rows']:
+                    st.session_state.scanner_results = pd.DataFrame(st.session_state['scan_rows'])
+
+                st.rerun()  # Volgende batch automatisch starten
 
         if not st.session_state.scanner_results.empty:
             df_scan = st.session_state.scanner_results
