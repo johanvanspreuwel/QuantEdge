@@ -527,7 +527,6 @@ def compute_support_resistance(df: pd.DataFrame, window: int = SUPPORT_WINDOW, c
     Robuuste support/resistance berekening met drielaagse fallback procedure.
     Voorkomt $nan output bij korte tijdshorizons of dunne data.
     """
-    import math
 
     support = resistance = float('nan')
 
@@ -586,8 +585,7 @@ def detect_candlestick_pattern(df: pd.DataFrame) -> str:
             if hasattr(val, 'iloc'): val = val.iloc[0]
             return float(val)
 
-        import math as _m
-
+    
         c3 = df.iloc[-3]   # 3 kaarsen geleden
         c2 = df.iloc[-2]   # gisteren
         c1 = df.iloc[-1]   # vandaag
@@ -597,7 +595,7 @@ def detect_candlestick_pattern(df: pd.DataFrame) -> str:
         o2,h2,l2,c2v = _sc(c2['Open']),_sc(c2['High']),_sc(c2['Low']),_sc(c2['Close'])
         o3,h3,l3,c3v = _sc(c3['Open']),_sc(c3['High']),_sc(c3['Low']),_sc(c3['Close'])
 
-        if any(_m.isnan(v) for v in [o1,h1,l1,c1v,o2,h2,l2,c2v,o3,h3,l3,c3v]):
+        if any(math.isnan(v) for v in [o1,h1,l1,c1v,o2,h2,l2,c2v,o3,h3,l3,c3v]):
             return "Geen data"
 
         # Hulpvariabelen vandaag
@@ -1192,8 +1190,7 @@ def compute_15m_mean_reversion(ticker: str) -> dict:
             raw_last = close.iloc[-1]
             last_price = round(float(raw_last.iloc[0]) if hasattr(raw_last, 'iloc') else float(raw_last), 2)
 
-            import math as _math_local
-            if _math_local.isnan(last_price):
+            if math.isnan(last_price):
                 # Probeer de laatste niet-NaN waarde
                 non_nan = close.dropna()
                 if non_nan.empty:
@@ -1227,7 +1224,6 @@ def compute_15m_mean_reversion(ticker: str) -> dict:
             else:
                 koers_str = f"{symbol}{display_price:,.2f}"
 
-            import math
             safe_deviation = deviation if not math.isnan(deviation) else 0.0
             safe_rsi_float = float(rsi_val) if not np.isnan(rsi_val) else 50.0
             rsi_display = str(int(rsi_val)) if not np.isnan(rsi_val) else 'N/A'
@@ -1747,14 +1743,13 @@ def apply_rr_veto(mtf_result: dict,
       'rr_veto'       : True/False — of het veto is getriggerd
       'rr_veto_reason': leesbare reden voor de override
     """
-    import math as _m
 
     result = dict(mtf_result)  # kopie, nooit het origineel muteren
     result['rr_veto']        = False
     result['rr_veto_reason'] = ''
 
     # Guard: ongeldige inputs behandelen als veto
-    if any(_m.isnan(v) if isinstance(v, float) else False
+    if any(math.isnan(v) if isinstance(v, float) else False
            for v in [current_price, resistance_target, actual_rr]):
         result['status']         = 'REJECTED'
         result['rr_veto']        = True
@@ -2296,7 +2291,6 @@ def build_candlestick_chart(df: pd.DataFrame, ticker: str) -> go.Figure:
     4. ATR(14) sub-panel met RMA smoothing (donkerrood)
     5. Gekleurde volume bars (groen/rood)
     """
-    import math as _m
 
     # Normaliseer MultiIndex
     if isinstance(df.columns, pd.MultiIndex):
@@ -3534,14 +3528,13 @@ with main_tabs[2]:
     if df_dd is None or df_dd.empty:
         st.error(f"❌ Geen data beschikbaar voor **{active_ticker}**. Controleer de ticker-naam.")
     else:
-        import math as _math_dd
 
         close_dd = df_dd['Close'].squeeze()
 
         # Robuuste scalar extractie — beschermt tegen MultiIndex-resten
         _raw_last_dd = close_dd.iloc[-1]
         last_price_dd = float(_raw_last_dd.iloc[0]) if hasattr(_raw_last_dd, 'iloc') else float(_raw_last_dd)
-        if _math_dd.isnan(last_price_dd):
+        if math.isnan(last_price_dd):
             _non_nan_dd = close_dd.dropna()
             last_price_dd = float(_non_nan_dd.iloc[-1]) if not _non_nan_dd.empty else 0.0
 
@@ -3575,9 +3568,9 @@ with main_tabs[2]:
         mc1, mc2, mc3, mc4, mc5, mc6 = st.columns(6)
         mc1.metric(f"💰 Koers ({_badge_dd})", _koers_lbl, delta=_delta_dd)
         mc2.metric("📊 RSI (14D)",       f"{int(rsi_dd)}"                                       if not np.isnan(rsi_dd)      else "N/A")
-        mc3.metric("🟢 Support 30D",     f"{_sym_dd}{support_dd:,.2f}"    if not _math_dd.isnan(support_dd)    else "N/A")
-        mc4.metric("🔴 Resistance 30D",  f"{_sym_dd}{resistance_dd:,.2f}" if not _math_dd.isnan(resistance_dd) else "N/A")
-        mc5.metric("📐 Afwijking",       f"{deviation_dd:.2f}%"            if not _math_dd.isnan(deviation_dd)  else "N/A")
+        mc3.metric("🟢 Support 30D",     f"{_sym_dd}{support_dd:,.2f}"    if not math.isnan(support_dd)    else "N/A")
+        mc4.metric("🔴 Resistance 30D",  f"{_sym_dd}{resistance_dd:,.2f}" if not math.isnan(resistance_dd) else "N/A")
+        mc5.metric("📐 Afwijking",       f"{deviation_dd:.2f}%"            if not math.isnan(deviation_dd)  else "N/A")
         mc6.metric("📡 Marktfase",       _phase_dd)
 
         st.markdown("<br>", unsafe_allow_html=True)
@@ -3647,9 +3640,8 @@ with main_tabs[2]:
             mtf_result = compute_multi_timeframe_check(active_ticker)
 
         # ── Pre-bereken R:R zodat veto de MTF-badge kan overschrijven ─────────
-        import math as _math_rr
-        _safe_sup_dd  = support_dd    if (not _math_rr.isnan(support_dd)    and support_dd > 0)    else last_price_dd * (1 - TRADE_FALLBACK_SL)
-        _safe_res_dd  = resistance_dd if (not _math_rr.isnan(resistance_dd) and resistance_dd > 0) else last_price_dd * (1 + TRADE_FALLBACK_RES)
+        _safe_sup_dd  = support_dd    if (not math.isnan(support_dd)    and support_dd > 0)    else last_price_dd * (1 - TRADE_FALLBACK_SL)
+        _safe_res_dd  = resistance_dd if (not math.isnan(resistance_dd) and resistance_dd > 0) else last_price_dd * (1 + TRADE_FALLBACK_RES)
         _sl_dd        = _safe_sup_dd * (1 - TRADE_RISK_PCT)
         _risk_dd      = last_price_dd - _sl_dd
         _raw_tp3_dd   = _safe_res_dd * (1 - TRADE_TP3_BUFFER)
@@ -3707,15 +3699,14 @@ with main_tabs[2]:
         with analysis_tabs[0]:
             st.markdown("#### 🎯 Trading Strijdplan")
 
-            import math as _math
 
             risk_pct     = TRADE_RISK_PCT
             reward_ratio = TRADE_REWARD_RATIO
 
             # NaN-safe support/resistance — valt terug op koers-gebaseerde waardes
-            safe_support    = support_dd    if (not _math.isnan(support_dd)    and support_dd > 0) \
+            safe_support    = support_dd    if (not math.isnan(support_dd)    and support_dd > 0) \
                               else last_price_dd * (1 - TRADE_FALLBACK_SL)
-            safe_resistance = resistance_dd if (not _math.isnan(resistance_dd) and resistance_dd > 0) \
+            safe_resistance = resistance_dd if (not math.isnan(resistance_dd) and resistance_dd > 0) \
                               else last_price_dd * (1 + TRADE_FALLBACK_RES)
 
             instap    = round(last_price_dd, 2)
@@ -3796,8 +3787,8 @@ with main_tabs[2]:
                     </div>""", unsafe_allow_html=True)
 
             st.markdown("&nbsp;", unsafe_allow_html=True)
-            _rsi_display = int(rsi_dd) if not _math.isnan(rsi_dd) else 'N/A'
-            _dev_display = f"{deviation_dd:.2f}%" if not _math.isnan(deviation_dd) else 'N/A'
+            _rsi_display = int(rsi_dd) if not math.isnan(rsi_dd) else 'N/A'
+            _dev_display = f"{deviation_dd:.2f}%" if not math.isnan(deviation_dd) else 'N/A'
             _rr_label    = f"{actual_rr}:1" if actual_rr > 0 else "N/A (koers boven resistance)"
 
             st.markdown(f"""
@@ -3813,7 +3804,7 @@ with main_tabs[2]:
                 <tr><td style="color:#848E9C;padding:4px 12px 4px 0;">Patroon</td>
                     <td><b>{pattern_dd}</b></td></tr>
                 <tr><td style="color:#848E9C;padding:4px 12px 4px 0;">Fase</td>
-                    <td><b>{determine_phase(rsi_dd, deviation_dd if not _math.isnan(deviation_dd) else 0.0, pattern_dd)}</b></td></tr>
+                    <td><b>{determine_phase(rsi_dd, deviation_dd if not math.isnan(deviation_dd) else 0.0, pattern_dd)}</b></td></tr>
                 <tr><td style="color:#848E9C;padding:4px 12px 4px 0;">Afwijking Support</td>
                     <td><b>{_dev_display}</b></td></tr>
                 <tr><td style="color:#848E9C;padding:4px 12px 4px 0;">Stop-Loss</td>
