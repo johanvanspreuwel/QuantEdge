@@ -107,12 +107,12 @@ CANDLE_STAR_CLOSE_MAX   = 0.35  # Sluiting ≤ 35% van range-bodem = Shooting St
 CACHE_PRICE_TTL       = 300   # Seconden cache koersdata (5 min)
 CACHE_POOL_TTL        = 3600  # Seconden cache tickerpool (1 uur)
 DATA_MAIN_PERIOD      = "3mo" # Periode hoofdtabel
-DATA_SCAN_PERIOD      = "6mo" # Periode scanner
+DATA_SCAN_PERIOD      = "3mo" # Periode scanner (3mo = sneller, minder timeouts)
 DATA_WL_PERIOD        = "1mo" # Periode watchlist
 DATA_MTF_WEEKLY       = "1y"  # Periode wekelijkse MTF check
 DATA_MTF_HOURLY       = "5d"  # Periode uurlijkse MTF check
 DATA_MIN_ROWS_MAIN    = 30    # Min rijen voor hoofdtabel
-DATA_MIN_ROWS_SCAN    = 50    # Min rijen voor scanner
+DATA_MIN_ROWS_SCAN    = 30    # Min rijen voor scanner (verlaagd voor snelheid)
 DATA_MIN_ROWS_FETCH   = 5     # Min rijen voor geldige datafetch
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -827,6 +827,28 @@ def fetch_live_price(ticker: str) -> dict:
 
 
 @st.cache_data(ttl=CACHE_PRICE_TTL)
+def fetch_ticker_data_fast(ticker: str) -> pd.DataFrame | None:
+    """
+    Snelle data-fetch voor de scanner — alleen Close/Volume, geen info.
+    Gebruikt 3mo ipv 6mo voor snelheid. Geen prepost (sneller).
+    """
+    try:
+        df = yf.download(ticker, period="3mo", interval="1d",
+                         progress=False, auto_adjust=True)
+        if df is None or df.empty or len(df) < DATA_MIN_ROWS_SCAN:
+            return None
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = [c[0] for c in df.columns]
+        required = {'Open','High','Low','Close','Volume'}
+        if not required.issubset(set(df.columns)):
+            return None
+        df = df.dropna(subset=['Close'])
+        return df if len(df) >= DATA_MIN_ROWS_SCAN else None
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=CACHE_PRICE_TTL)
 def fetch_ticker_data(ticker: str, period: str = "3mo"):
     """
     Haal OHLCV-data op via yfinance met caching.
@@ -1456,7 +1478,7 @@ def get_large_ticker_pool() -> list:
         'MRK.DE','RWE.DE','EON.DE','FRE.DE','ZAL.DE','IFX.DE','PAH3.DE',
         'OR.PA','MC.PA','TTE.PA','SAN.PA','BNP.PA','ACA.PA','SGO.PA',
         'KER.PA','RMS.PA','DSY.PA','AIR.PA','DG.PA','ORA.PA','VIE.PA',
-        'NESN.SW','ROG.SW','NOVN.SW','UBSG.SW','CSGN.SW','ABBN.SW','ZURN.SW',
+        'NESN.SW','ROG.SW','NOVN.SW','UBSG.SW','ABBN.SW','ZURN.SW',
         'AZN.L','SHEL.L','HSBA.L','BP.L','GSK.L','RIO.L','ULVR.L',
         'LLOY.L','BATS.L','REL.L','DGE.L','EXPN.L','LSEG.L','CPG.L',
         'NOVO-B.CO','ERICB.ST','VOLV-B.ST','SAND.ST','ATCO-A.ST','SEB-A.ST',
@@ -1481,7 +1503,7 @@ def get_large_ticker_pool() -> list:
         'PG','CL','KMB','GIS','K','MDLZ','PM','MO','WM','RSG',
         'SYY','CAG','CPB','HSY','MKC','CHD','CLX','EL','COTY',
         'DIS','NFLX','CMCSA','T','VZ','TMUS','CHTR','PARA','WBD','FOX',
-        'TTWO','EA','ATVI','RBLX','U',
+        'TTWO','EA','RBLX','U',
         'O','PLD','SPG','WELL','AMT','CCI','EQIX','DLR','PSA','EXR',
         'AVB','EQR','ESS','UDR','MAA','CPT','NNN','VICI','GLPI',
         'ADP','PAYX','INTU','ORCL','CRM','NOW','SNOW','DDOG','CRWD',
@@ -1501,25 +1523,25 @@ def get_large_ticker_pool() -> list:
 
     # ── LAYER 2 — hardcoded S&P 500 fallback ──────────────────────────────────
     SP500_HARDCODED: list = [
-        'A','AAL','AAP','AAPL','ABBV','ABC','ABMD','ABT','ACN','ADBE',
+        'A','AAL','AAP','AAPL','ABBV','ABC','ABT','ACN','ADBE',
         'ADI','ADM','ADP','ADSK','AEE','AEP','AES','AFL','AIG','AIZ',
         'AJG','AKAM','ALB','ALGN','ALK','ALL','ALLE','AMAT','AMCR','AMD',
         'AME','AMGN','AMP','AMT','AMZN','ANET','ANSS','AON','AOS','APA',
-        'APD','APH','APTV','ARE','ATO','ATVI','AVB','AVGO','AVY','AWK',
+        'APD','APH','APTV','ARE','ATO','AVB','AVGO','AVY','AWK',
         'AXP','AZO','BA','BAC','BALL','BAX','BBY','BDX','BEN','BF-B',
         'BIIB','BIO','BK','BKNG','BKR','BLK','BLL','BMY','BR','BRK-B',
         'BSX','BWA','BXP','C','CAG','CAH','CARR','CAT','CB','CBOE',
         'CBRE','CCI','CCL','CDNS','CDW','CE','CEG','CF','CFG','CHD',
-        'CHRW','CHTR','CI','CINF','CL','CLX','CMA','CMCSA','CME','CMG',
+        'CHRW','CHTR','CI','CINF','CL','CLX','CMCSA','CME','CMG',
         'CMI','CMS','CNC','CNP','COF','COO','COP','COST','CPB','CPRT',
-        'CRL','CRM','CSCO','CSX','CTAS','CTLT','CTRA','CTSH','CTVA',
-        'CVS','CVX','CZR','D','DAL','DD','DE','DFS','DG','DGX','DHI',
-        'DHR','DIS','DISH','DLR','DLTR','DOV','DOW','DPZ','DRE','DRI',
+        'CRL','CRM','CSCO','CSX','CTAS','CTRA','CTSH','CTVA',
+        'CVS','CVX','CZR','D','DAL','DD','DE','DG','DGX','DHI',
+        'DHR','DIS','DLR','DLTR','DOV','DOW','DPZ','DRI',
         'DTE','DUK','DVA','DVN','DXC','DXCM','EA','EBAY','ECL','ED',
         'EFX','EIX','EL','EMN','EMR','ENPH','EOG','EPAM','EQIX','EQR',
         'EQT','ES','ESS','ETN','ETR','ETSY','EVRG','EW','EXC','EXPD',
         'EXPE','EXR','F','FANG','FAST','FCX','FDS','FDX','FE','FFIV',
-        'FIS','FISV','FITB','FLT','FMC','FOX','FOXA','FRC','FRT','FSLR',
+        'FIS','FISV','FITB','FLT','FMC','FOX','FOXA','FRT','FSLR',
         'FTNT','FTV','GD','GE','GILD','GIS','GL','GLW','GM','GNRC',
         'GOOG','GOOGL','GPC','GPN','GRMN','GS','GWW','HAL','HAS','HBAN',
         'HCA','HD','HES','HIG','HII','HLT','HOLX','HON','HPE','HPQ',
@@ -1530,8 +1552,7 @@ def get_large_ticker_pool() -> list:
         'KMX','KO','KR','L','LDOS','LEN','LH','LHX','LIN','LKQ','LLY',
         'LMT','LNC','LNT','LOW','LRCX','LUV','LVS','LW','LYB','LYV',
         'MA','MAA','MAR','MAS','MCD','MCHP','MCK','MCO','MDLZ','MDT',
-        'MET','META','MGM','MHK','MKC','MKTX','MLM','MMC','MMM','MNST',
-        'MO','MOH','MOS','MPC','MPWR','MRK','MRNA','MRO','MS','MSCI',
+        'MET','META','MGM','MHK','MKC','MKTX','MLM','MMC','MMM','MO','MOH','MOS','MPC','MPWR','MRK','MRNA','MRO','MS','MSCI',
         'MSFT','MSI','MTB','MTCH','MTD','MU','NCLH','NDAQ','NEM','NEE',
         'NI','NKE','NOC','NOW','NRG','NSC','NTAP','NTRS','NUE','NVDA',
         'NVR','NWL','NWS','NWSA','NXPI','O','OGN','OKE','OMC','ON',
@@ -1540,7 +1561,7 @@ def get_large_ticker_pool() -> list:
         'PLD','PM','PNC','PNR','PNW','POOL','PPG','PPL','PRU','PSA',
         'PSX','PTC','PWR','PXD','PYPL','QCOM','QRVO','RCL','RE','REG',
         'REGN','RF','RHI','RJF','RL','RMD','ROK','ROL','ROP','ROST',
-        'RSG','RTX','SBAC','SBUX','SCHW','SEE','SHW','SIVB','SJM','SLB',
+        'RSG','RTX','SBAC','SBUX','SCHW','SEE','SHW','SJM','SLB',
         'SNA','SNPS','SO','SPG','SPGI','SRE','STE','STT','STX','STZ',
         'SWK','SWKS','SYF','SYK','SYY','T','TAP','TDG','TDY','TECH',
         'TEL','TER','TFC','TFX','TGT','TJX','TMO','TMUS','TPR','TRMB',
@@ -1564,7 +1585,7 @@ def get_large_ticker_pool() -> list:
         'CLB','CNA','CNK','CNO','COHU','COLB','COLM','CPF','CPRX','CRC',
         'CROX','CSL','CW','CWEN','CWK','CWST','CWT',
         # D-G
-        'DAN','DFIN','DLX','DM','DNB','DOCS','DOOR','DRH','DRQ','DY',
+        'DAN','DFIN','DLX','DOCS','DRH','DY',
         'EAT','EFC','EGP','EHC','EME','ENVA','EPC','ESE','ESRT','EVH',
         'EXP','EXPI','FAF','FARO','FCN','FG','FHN','FIBK','FIX','FL',
         'FLO','FLS','FNB','FOR','FORM','FR','FRME','FSS','FUL',
@@ -1572,7 +1593,7 @@ def get_large_ticker_pool() -> list:
         'GRBK','GRC','GTN','GTLS','GVA',
         # H-L
         'HAE','HALO','HBI','HCC','HCI','HGV','HIBB','HLIT','HLX',
-        'HMN','HNI','HOPE','HRI','HSC','HTBK','HTZ','HUBG','HWC',
+        'HMN','HNI','HOPE','HRI','HSC','HTBK','HUBG','HWC',
         'ICLR','IDCC','IIPR','INDB','INGR','IPGP','ITT',
         'JACK','JBL','JOE','KAI','KAMN','KAR','KBH','KBR','KFY',
         'KMT','KMPR','KN','KNX','KNSL','KSS','KTOS',
@@ -1591,7 +1612,7 @@ def get_large_ticker_pool() -> list:
         # S
         'SAH','SANM','SBCF','SBRA','SCI','SEIC','SF','SFBS','SIGI',
         'SITC','SITE','SJW','SKT','SLM','SM','SMTC','SNV','SPTN',
-        'STE','STEP','STRA','SUM','SWN','SXT','SYBT','SXI',
+        'STE','STEP','SUM','SWN','SXT','SYBT','SXI',
         # T-Z
         'TCBK','TCBI','TEX','TGI','TILE','TISI','TNET','TPH','TREX',
         'TRNO','TRN','TRMK','TTC','TWI','UBSI','UCBI','UGI','UNF',
@@ -1605,9 +1626,7 @@ def get_large_ticker_pool() -> list:
         'EXEL','ITCI','PRCT','QLYS','HALO','CRVL','IIPR','UFPT',
         'PRGS','FCFS','MGNI','GKOS','IRDM','LCII','SAIA','EXPO',
         'MGEE','HWKN','POWI','IPAR','MSEX','SPSC','CSGS','NVCR',
-        'AEIS','ICFI','AFTS','HURN','NTCT','PSMT','EPAC','CSWI',
-        'VRRM','ACLS','FORM','PTGX','TMDX','PCVX','RXST','PGNY',
-        'FTDR','XPEL','UFPT','DXPE','AVNS','LKFN','SKYW','PRAA',
+        'AEIS','ICFI','AFTS','HURN','NTCT','PSMT','EPAC','VRRM','ACLS','FORM','PTGX','TMDX','PCVX','RXST','FTDR','XPEL','UFPT','DXPE','AVNS','LKFN','SKYW','PRAA',
         'AMSF','HSTM','PFIS','RCUS','CCOI','SANA','NKTR','INVA',
     ]
 
@@ -1877,11 +1896,16 @@ def run_scanner(strategy: str, pool: list, max_results: int = 9999) -> pd.DataFr
         # De volledige pool wordt altijd doorlopen; filtering gebeurt achteraf.
 
         try:
-            # ── Data ophalen via gecachte functie (per ticker, niet bulk) ─────
-            df, info = fetch_ticker_data(ticker, period=DATA_SCAN_PERIOD)
-            if df is None or len(df) < DATA_MIN_ROWS_SCAN:
+            # ── Data ophalen — snelle fetch voor scanner ──────────────────────
+            df = fetch_ticker_data_fast(ticker)
+            if df is None:
                 failed.append(ticker)
                 continue
+
+            # Zorg dat kolommen 1D-series zijn
+            for col in list(df.columns):
+                if hasattr(df[col], 'squeeze'):
+                    df[col] = df[col].squeeze()
 
             close  = df['Close'].squeeze()
             high   = df['High'].squeeze()
