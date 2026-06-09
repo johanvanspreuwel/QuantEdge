@@ -13,10 +13,11 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import requests
 import re
+import json
+import os
 from datetime import datetime, timedelta
 import warnings
-import math as _math_global
-import math   # ook als 'math' beschikbaar voor directe aanroepen
+import math
 warnings.filterwarnings("ignore")
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -237,11 +238,7 @@ st.markdown(f"""
 
 # ─────────────────────────────────────────────────────────────────────────────
 # OPSLAG  —  Streamlit Cloud compatibel
-# Op Streamlit Cloud is er geen persistent bestandssysteem per gebruiker.
-# Tickers worden opgeslagen in st.session_state (per sessie).
-# Lokaal (thuis) werkt het JSON-bestand nog steeds als het naast het script staat.
 # ─────────────────────────────────────────────────────────────────────────────
-import json, os
 
 DEFAULT_TICKERS = [
     # Tech, Semis & Software
@@ -1169,7 +1166,12 @@ def compute_15m_mean_reversion(ticker: str) -> dict:
         result['status'] = f'– Fout: {str(e)[:30]}'
 
     return result
+
+
+@st.cache_data(ttl=CACHE_PRICE_TTL)
+def build_main_table(tickers: tuple) -> pd.DataFrame:
     """Bouw de hoofdmarkttabel op voor een lijst van tickers."""
+    import traceback as _tb
     rows = []
     for ticker in tickers:
         try:
@@ -1229,8 +1231,14 @@ def compute_15m_mean_reversion(ticker: str) -> dict:
             rsi_display = str(int(rsi_val)) if not np.isnan(rsi_val) else 'N/A'
 
             # ── Intraday patronen (15M en 5M) ────────────────────────────────
-            intra = fetch_intraday_patterns(ticker)
-            mr15  = compute_15m_mean_reversion(ticker)
+            try:
+                intra = fetch_intraday_patterns(ticker)
+            except Exception:
+                intra = {'15M[-1]': '–', '15M[0]': '–', '5M[-1]': '–', '5M[0]': '–'}
+            try:
+                mr15 = compute_15m_mean_reversion(ticker)
+            except Exception:
+                mr15 = {'status': '–', 'direction': None}
 
             rows.append({
                 'Ticker': ticker,
@@ -1253,13 +1261,14 @@ def compute_15m_mean_reversion(ticker: str) -> dict:
                 'Actie': action,
             })
         except Exception as e:
+            err_detail = str(e)
             rows.append({
                 'Ticker': ticker, 'Koers': 'ERR', 'RSI (14D)': 'ERR',
                 'Support (30D)': 'ERR', 'Weerstand (30D)': 'ERR', 'Afwijking %': 'ERR',
                 '_dev_float': 999.0, '_rsi_float': 50.0, '_ext_chg': None,
                 'Patroon (1D)': 'ERR', '15M [-1]': '–', '15M [0]': '–',
                 '5M [-1]': '–', '5M [0]': '–', '15M MR Status': '–', '_mr15_dir': '',
-                'Koers Status / Fase': f'⚠ Fout: {str(e)[:30]}', 'Actie': '⚠ Fout'
+                'Koers Status / Fase': f'⚠ {err_detail[:40]}', 'Actie': '⚠ Fout'
             })
     # Zorg dat de volledige DataFrame geen gemengde kolomtypes heeft
     df_result = pd.DataFrame(rows)
@@ -2751,8 +2760,14 @@ with main_tabs[0]:
     st.markdown("---")
 
     # ── Data Ophalen & Tabel ──────────────────────────────────────────────────
-    with st.spinner("⏳ Live marktdata ophalen..."):
-        main_df = build_main_table(tuple(st.session_state.main_market_tickers))
+    try:
+        with st.spinner("⏳ Live marktdata ophalen..."):
+            main_df = build_main_table(tuple(st.session_state.main_market_tickers))
+    except Exception as _e:
+        st.error(f"❌ Fout in build_main_table: {type(_e).__name__}: {str(_e)}")
+        import traceback as _tb
+        st.code(_tb.format_exc())
+        main_df = pd.DataFrame()
 
     if not main_df.empty:
         m1, m2, m3, m4 = st.columns(4)
