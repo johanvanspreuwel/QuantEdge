@@ -259,7 +259,7 @@ DEFAULT_TICKERS = [
     "MAERSK-B.CO","SHELL.AS","RHM.DE","MC.PA","WMT.DE",
     # Traditional Energy — Oil & Gas
     "XOM","CVX","COP","EOG","OXY","FANG","DVN","HES","MRO","APA",
-    "EQT","CTRA","SHEL","BP","TTE",
+    "EQT","SHEL","BP","TTE",
     # Traditional Energy — Refining & Infrastructure
     "MPC","VLO","PSX","OKE","KMI","WMB","MPLX",
     # Traditional Energy — Equipment & Services
@@ -3093,7 +3093,7 @@ with main_tabs[1]:
     for i, sk in enumerate(row1_keys):
         label, tooltip = strategy_map[sk]
         with btn_row1[i]:
-            if st.button(label, key=f"scan_btn_{sk}", help=tooltip, use_container_width=True):
+            if st.button(label, key=f"scan_btn_{sk}", help=tooltip, width='stretch'):
                 st.session_state.active_strategy = sk
                 st.session_state.scanner_results = pd.DataFrame()
 
@@ -3101,7 +3101,7 @@ with main_tabs[1]:
     for i, sk in enumerate(row2_keys):
         label, tooltip = strategy_map[sk]
         with btn_row2[i]:
-            if st.button(label, key=f"scan_btn_{sk}", help=tooltip, use_container_width=True):
+            if st.button(label, key=f"scan_btn_{sk}", help=tooltip, width='stretch'):
                 st.session_state.active_strategy = sk
                 st.session_state.scanner_results = pd.DataFrame()
 
