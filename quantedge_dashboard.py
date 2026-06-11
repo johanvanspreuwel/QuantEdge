@@ -294,6 +294,30 @@ DEFAULT_WATCHLIST = {
 #   GITHUB_FILE  = "quantedge_userdata.json"
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _get_local_storage():
+    """Lokale JSON fallback voor thuis gebruik."""
+    try:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "quantedge_userdata.json")
+        if os.path.exists(path):
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if isinstance(data.get('tickers'), list) and isinstance(data.get('watchlist'), dict):
+                return data
+    except Exception:
+        pass
+    return None
+
+def _save_local_storage() -> None:
+    """Sla op naar lokaal JSON-bestand (thuis op pc)."""
+    try:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "quantedge_userdata.json")
+        data = {'tickers': list(st.session_state.main_market_tickers),
+                'watchlist': dict(st.session_state.custom_watchlist)}
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+    except Exception:
+        pass
+
 def _get_github_config():
     """Haal GitHub configuratie op uit Streamlit Secrets of omgevingsvariabelen."""
     try:
@@ -3181,86 +3205,32 @@ with main_tabs[1]:
 
         sc1, sc2 = st.columns([1, 3])
         with sc1:
-            # Pool keuze
             use_large = st.toggle(
-                "🌐 Grote pool (1000+ tickers)",
+                "🌐 Grote pool",
                 value=False,
                 key="use_large_pool",
-                help="Uit = alleen jouw eigen tickers (snel). Aan = volledige S&P500 + MidCap + Europa (langzaam, kans op Yahoo rate-limit)."
+                help="Uit = eigen tickers (snel). Aan = 1000+ tickers (langzaam)."
             )
 
-            BATCH_SIZE = 50
-
-            if 'scan_pool'    not in st.session_state: st.session_state['scan_pool']    = []
-            if 'scan_offset'  not in st.session_state: st.session_state['scan_offset']  = 0
-            if 'scan_rows'    not in st.session_state: st.session_state['scan_rows']    = []
-            if 'scan_running' not in st.session_state: st.session_state['scan_running'] = False
-
-            col_btn1, col_btn2 = st.columns(2)
-            with col_btn1:
-                if st.button("▶ Start / Hervat Scan", key="btn_start_scan"):
-                    if not st.session_state['scan_running']:
-                        pool = load_ticker_pool(use_large_pool=use_large)
-                        st.session_state['scan_pool']    = pool
-                        st.session_state['scan_offset']  = 0
-                        st.session_state['scan_rows']    = []
-                        st.session_state.scanner_results = pd.DataFrame()
-                    st.session_state['scan_running'] = True
-                    st.rerun()
-
-            with col_btn2:
-                if st.button("⏹ Stop", key="btn_stop_scan"):
-                    st.session_state['scan_running'] = False
+            if st.button("▶ Start Scan", key="btn_start_scan"):
+                pool = load_ticker_pool(use_large_pool=use_large)
+                with st.empty():
+                    st.markdown(f"⏳ Scanning {len(pool)} tickers...")
+                results = run_scanner(st.session_state.active_strategy, pool)
+                st.session_state.scanner_results = results
+                st.rerun()
 
         with sc2:
             pool_n = st.session_state.get('total_ticker_count', '?')
-            scrape_info = st.session_state.get('pool_scrape_status', '')
             st.markdown(
                 f"<div style='background:#13171C;border:1px solid #2B3139;border-radius:6px;"
                 f"padding:10px 14px;font-family:monospace;font-size:0.78rem;'>"
                 f"<span style='color:#848E9C;'>Pool: </span>"
                 f"<b style='color:#F0B90B;font-size:1rem;'>{pool_n}</b>"
-                f"<span style='color:#848E9C;'> tickers</span><br>"
-                f"<span style='color:#848E9C;font-size:0.72rem;'>{scrape_info}</span>"
+                f"<span style='color:#848E9C;'> tickers</span>"
                 f"</div>",
                 unsafe_allow_html=True
             )
-
-        # ── Batch verwerking ──────────────────────────────────────────────────
-        if st.session_state.get('scan_running') and st.session_state.get('scan_pool'):
-            pool    = st.session_state['scan_pool']
-            offset  = st.session_state['scan_offset']
-            total   = len(pool)
-            batch   = pool[offset:offset + BATCH_SIZE]
-
-            if not batch:
-                # Scan klaar
-                st.session_state['scan_running'] = False
-                if st.session_state['scan_rows']:
-                    st.session_state.scanner_results = pd.DataFrame(st.session_state['scan_rows'])
-            else:
-                pct = min(offset / total, 1.0)
-                hits_so_far = len(st.session_state['scan_rows'])
-                st.progress(pct,
-                    text=f"⏳ Batch {offset//BATCH_SIZE + 1} · {offset}/{total} tickers · {hits_so_far} hits")
-
-                # Verwerk batch
-                new_rows = run_scanner(
-                    st.session_state.active_strategy,
-                    batch,
-                )
-
-                if not new_rows.empty:
-                    st.session_state['scan_rows'].extend(new_rows.to_dict('records'))
-
-                # Volgende batch instellen en rerun
-                st.session_state['scan_offset'] = offset + BATCH_SIZE
-
-                # Tussentijdse resultaten tonen
-                if st.session_state['scan_rows']:
-                    st.session_state.scanner_results = pd.DataFrame(st.session_state['scan_rows'])
-
-                st.rerun()  # Volgende batch automatisch starten
 
         if not st.session_state.scanner_results.empty:
             df_scan = st.session_state.scanner_results
