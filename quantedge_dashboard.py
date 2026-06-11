@@ -331,59 +331,48 @@ def _save_to_github():
     """Sla tickers en watchlist op in GitHub."""
     token, repo, file = _get_github_config()
     if not token:
-        return False
+        return False, "Geen GitHub token"
     try:
         import base64
-        data    = {
+        data = {
             "tickers":   list(st.session_state.main_market_tickers),
             "watchlist": dict(st.session_state.custom_watchlist),
         }
-        content = base64.b64encode(
+        content_b64 = base64.b64encode(
             json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8")
         ).decode("utf-8")
         url  = f"https://api.github.com/repos/{repo}/contents/{file}"
-        hdrs = {"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"}
-        # Haal huidige SHA op (nodig voor update)
-        sha  = None
-        resp = requests.get(url, headers=hdrs, timeout=10)
+        hdrs = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        sha = None
+        resp = requests.get(url, headers=hdrs, timeout=15)
         if resp.status_code == 200:
             sha = resp.json().get("sha")
-        payload = {"message": "QuantEdge: tickers bijgewerkt", "content": content}
+        elif resp.status_code == 401:
+            return False, "GitHub token ongeldig (401)"
+        payload = {"message": "QuantEdge: tickers bijgewerkt", "content": content_b64}
         if sha:
             payload["sha"] = sha
-        resp = requests.put(url, headers=hdrs, json=payload, timeout=10)
-        return resp.status_code in (200, 201)
-    except Exception:
-        return False
+        resp = requests.put(url, headers=hdrs, json=payload, timeout=15)
+        if resp.status_code in (200, 201):
+            return True, "OK"
+        return False, f"GitHub fout: {resp.status_code}"
+    except Exception as e:
+        return False, str(e)
 
-def _get_local_storage():
-    """Lokale JSON fallback voor thuis gebruik."""
-    try:
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "quantedge_userdata.json")
-        if os.path.exists(path):
-            with open(path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            if isinstance(data.get('tickers'), list) and isinstance(data.get('watchlist'), dict):
-                return data
-    except Exception:
-        pass
-    return None
-
-def _save_local_storage() -> None:
-    """Sla op naar lokaal JSON-bestand (thuis op pc)."""
-    try:
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "quantedge_userdata.json")
-        data = {'tickers': list(st.session_state.main_market_tickers),
-                'watchlist': dict(st.session_state.custom_watchlist)}
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-    except Exception:
-        pass
 
 def _save_userdata() -> None:
-    """Sla op via GitHub (cloud) én lokaal (thuis). Beide tegelijk."""
-    _save_to_github()
+    """Sla op via GitHub (cloud) en lokaal (thuis)."""
+    ok, msg = _save_to_github()
+    if not ok:
+        st.session_state["_last_save_error"] = msg
+    else:
+        st.session_state["_last_save_error"] = None
     _save_local_storage()
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SESSION STATE DEFAULTS
@@ -1925,9 +1914,7 @@ def run_scanner(strategy: str, pool: list, max_results: int = 9999) -> pd.DataFr
             bulk_cache.update(batch_data)
         except Exception:
             pass
-        # Kleine pauze tussen batches om rate-limit te vermijden
-        import time as _time
-        _time.sleep(0.5)
+        # Geen sleep nodig
 
     n_fetched = len(bulk_cache)
     progress_bar.progress(0.4, text=f"✅ Data klaar: {n_fetched}/{total} · Analyseren...")
@@ -2768,7 +2755,11 @@ with main_tabs[0]:
             if t and t not in st.session_state.main_market_tickers:
                 st.session_state.main_market_tickers.append(t)
                 _save_userdata()
-                st.success(f"✅ {t} toegevoegd.")
+                err = st.session_state.get("_last_save_error")
+                if err:
+                    st.warning(f"✅ {t} toegevoegd (lokaal) maar GitHub opslag mislukt: {err}")
+                else:
+                    st.success(f"✅ {t} toegevoegd en opgeslagen.")
                 st.rerun()
             elif t in st.session_state.main_market_tickers:
                 st.warning(f"⚠ {t} staat al in de lijst.")
@@ -2830,8 +2821,8 @@ with main_tabs[0]:
 
     # ── Data Ophalen & Tabel ──────────────────────────────────────────────────
     try:
-        with st.spinner("⏳ Live marktdata ophalen..."):
-            main_df = build_main_table(tuple(st.session_state.main_market_tickers))
+        _spinner_ph = st.empty()
+        main_df = build_main_table(tuple(st.session_state.main_market_tickers))
     except Exception as _e:
         st.error(f"❌ Fout in build_main_table: {type(_e).__name__}: {str(_e)}")
         import traceback as _tb
@@ -2966,8 +2957,8 @@ with main_tabs[0]:
         if st.session_state.custom_watchlist:
             st.markdown("---")
             wl_rows = []
-            with st.spinner("⏳ Watchlist analyseren..."):
-                for ticker, label in st.session_state.custom_watchlist.items():
+            _wl_placeholder = st.empty()
+            for ticker, label in st.session_state.custom_watchlist.items():
                     try:
                         df_wl, info_wl = fetch_ticker_data(ticker, period=DATA_WL_PERIOD)
                         if df_wl is None or len(df_wl) < DATA_MIN_ROWS_FETCH:
@@ -3669,8 +3660,8 @@ with main_tabs[2]:
 
     st.markdown("---")
 
-    with st.spinner(f"⏳ Data ophalen voor {active_ticker}..."):
-        df_dd, info_dd = fetch_ticker_data(active_ticker, period=period_str)
+    _dd_ph = st.empty()
+    df_dd, info_dd = fetch_ticker_data(active_ticker, period=period_str)
 
     if df_dd is None or df_dd.empty:
         st.error(f"❌ Geen data beschikbaar voor **{active_ticker}**. Controleer de ticker-naam.")
@@ -3783,8 +3774,8 @@ with main_tabs[2]:
 
         st.markdown("---")
         st.markdown("#### 🔬 Multi-Timeframe Validatie")
-        with st.spinner("Validatie uitvoeren op 1W en 1H..."):
-            mtf_result = compute_multi_timeframe_check(active_ticker)
+        _mtf_ph = st.empty()
+        mtf_result = compute_multi_timeframe_check(active_ticker)
 
         # ── Pre-bereken R:R zodat veto de MTF-badge kan overschrijven ─────────
         _safe_sup_dd  = support_dd    if (not math.isnan(support_dd)    and support_dd > 0)    else last_price_dd * (1 - TRADE_FALLBACK_SL)
@@ -4050,8 +4041,8 @@ with main_tabs[2]:
             pos_words = ['surge','gain','rise','rally','growth','beat','upgrade','buy','strong','profit','record','jump','boost']
             neg_words = ['fall','drop','loss','decline','miss','downgrade','sell','cut','risk','warn','crash','sink','plunge']
 
-            with st.spinner("📡 Nieuws ophalen..."):
-                news_items = fetch_yahoo_rss(active_ticker)
+            _news_ph = st.empty()
+            news_items = fetch_yahoo_rss(active_ticker)
 
             if news_items:
                 for item in news_items:
