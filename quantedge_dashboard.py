@@ -243,7 +243,7 @@ st.markdown(f"""
 DEFAULT_TICKERS = [
     # Tech, Semis & Software
     "NVDA","ASML.AS","MSFT","AMD","TSLA","ARM","SAP","CSCO","MU",
-    "ADYEN.AS","TRMB","COTY","SITE","CMCSA","FMC","COIN","INTU",
+    "ADYEN.AS","TRMB","SITE","CMCSA","FMC","COIN","INTU",
     "KR","HPQ","CRWD","PANW","CRM","MA","PYPL","AMZN","NFLX","DIS",
     # Healthcare & Consumer
     "ZTS","BAYN.DE","JNJ","ABBV","OR.PA","PG","PEP","AD.AS","KO",
@@ -258,10 +258,10 @@ DEFAULT_TICKERS = [
     # European Tickers
     "MAERSK-B.CO","SHELL.AS","RHM.DE","MC.PA","WMT.DE",
     # Traditional Energy — Oil & Gas
-    "XOM","CVX","COP","EOG","OXY","FANG","DVN","HES","MRO","APA",
+    "XOM","CVX","COP","EOG","OXY","FANG","DVN","APA",
     "EQT","SHEL","BP","TTE",
     # Traditional Energy — Refining & Infrastructure
-    "MPC","VLO","PSX","OKE","KMI","WMB","MPLX",
+    "MPC","VLO","PSX","KMI","WMB","MPLX",
     # Traditional Energy — Equipment & Services
     "SLB","HAL","BKR",
     # Power Generation & Utilities
@@ -270,8 +270,7 @@ DEFAULT_TICKERS = [
     # Clean Tech & Alternative Energy
     "GEV","ENPH","SEDG","BEP","RUN","PLUG",
     # Energy ETFs
-    "XLE","VDE",
-]
+    "XLE","VDE"]
 
 DEFAULT_WATCHLIST = {
     "MCD":  "MCD",
@@ -1489,18 +1488,14 @@ def style_main_table(df: pd.DataFrame) -> pd.io.formats.style.Styler:
             ('font-family', 'JetBrains Mono, monospace'),
             ('font-size', '0.78rem'),
             ('border-bottom', '2px solid #F0B90B'),
-            ('padding', '8px 12px'),
-        ]},
+            ('padding', '8px 12px')]},
         {'selector': 'tbody td', 'props': [
             ('font-family', 'JetBrains Mono, monospace'),
             ('font-size', '0.8rem'),
             ('padding', '6px 12px'),
-            ('border-bottom', '1px solid #2B3139'),
-        ]},
+            ('border-bottom', '1px solid #2B3139')]},
         {'selector': 'tr:hover td', 'props': [
-            ('background-color', '#222831 !important'),
-        ]},
-    ])
+            ('background-color', '#222831 !important')]}])
     return styled
 
 
@@ -1529,8 +1524,7 @@ def get_large_ticker_pool() -> list:
         'LLOY.L','BATS.L','REL.L','DGE.L','EXPN.L','LSEG.L','CPG.L',
         'NOVO-B.CO','ERICB.ST','VOLV-B.ST','SAND.ST','ATCO-A.ST','SEB-A.ST',
         'RACE.MI','ENI.MI','ENEL.MI','ISP.MI','UCG.MI','STM.MI','PRY.MI',
-        'TEF.MC','IBE.MC','ITX.MC','BBVA.MC','SAN.MC','REP.MC',
-    ]
+        'TEF.MC','IBE.MC','ITX.MC','BBVA.MC','SAN.MC','REP.MC']
 
     EXTRAS: list = [
         'NVDA','MSFT','AAPL','GOOGL','GOOG','AMZN','META','TSLA','AMD','ARM',
@@ -1542,18 +1536,17 @@ def get_large_ticker_pool() -> list:
         'LLY','TMO','DHR','ISRG','SYK','BSX','MDT','ABT','ZTS','VRTX',
         'BIIB','MRNA','BNTX','INCY','ALNY','SGEN','BEAM','NTLA',
         'XOM','CVX','COP','SLB','EOG','PXD','HAL','MPC','PSX','VLO',
-        'OXY','DVN','HES','MRO','APA','FANG','BKR','NOV','WHD',
+        'OXY','DVN','APA','FANG','BKR','NOV','WHD',
         'GLD','SLV','USO','FCX','NEM','GOLD','WPM','CAT','DE','EMR',
         'NUE','STLD','CLF','AA','CENX','MP','ALB','SQM','LTHM','LAC',
         'WMT','COST','TGT','HD','LOW','MCD','SBUX','NKE','KO','PEP',
         'PG','CL','KMB','GIS','K','MDLZ','PM','MO','WM','RSG',
-        'SYY','CAG','CPB','HSY','MKC','CHD','CLX','EL','COTY',
-        'DIS','NFLX','CMCSA','T','VZ','TMUS','CHTR','PARA','WBD','FOX',
+        'SYY','CAG','CPB','HSY','MKC','CHD','CLX','EL','DIS','NFLX','CMCSA','T','VZ','TMUS','CHTR','PARA','WBD','FOX',
         'TTWO','EA','RBLX','U',
         'O','PLD','SPG','WELL','AMT','CCI','EQIX','DLR','PSA','EXR',
         'AVB','EQR','ESS','UDR','MAA','CPT','NNN','VICI','GLPI',
         'ADP','PAYX','INTU','ORCL','CRM','NOW','SNOW','DDOG','CRWD',
-        'ZS','OKTA','PANW','FTNT','NET','CFLT','MDB','ESTC','GTLB',
+        'ZS','OKTA','PANW','FTNT','NET','MDB','ESTC','GTLB',
         'SHOP','HUBS','BILL','PCTY','PAYC','WEX','FOUR',
         'GE','HON','MMM','ITW','ETN','PH','ROK','AME','FTV','GNRC',
         'UPS','FDX','DAL','UAL','AAL','LUV','JBLU','ALK',
@@ -1564,23 +1557,22 @@ def get_large_ticker_pool() -> list:
         'COIN','MSTR','RIOT','MARA','HUT','CLSK',
         'SPY','QQQ','IWM','DIA','XLK','XLF','XLE','XLV','XLI','XLY',
         'XLP','XLU','XLB','XLRE','XLC','GDX','GDXJ',
-        'TLT','HYG','LQD','EMB','VNQ','ARKK','ARKG','ARKF',
-    ]
+        'TLT','HYG','LQD','EMB','VNQ','ARKK','ARKG','ARKF']
 
     # ── LAYER 2 — hardcoded S&P 500 fallback ──────────────────────────────────
     SP500_HARDCODED: list = [
-        'A','AAL','AAP','AAPL','ABBV','ABC','ABT','ACN','ADBE',
+        'A','AAL','AAP','AAPL','ABBV','ABT','ACN','ADBE',
         'ADI','ADM','ADP','ADSK','AEE','AEP','AES','AFL','AIG','AIZ',
         'AJG','AKAM','ALB','ALGN','ALK','ALL','ALLE','AMAT','AMCR','AMD',
-        'AME','AMGN','AMP','AMT','AMZN','ANET','ANSS','AON','AOS','APA',
+        'AME','AMGN','AMP','AMT','AMZN','ANET','AON','AOS','APA',
         'APD','APH','APTV','ARE','ATO','AVB','AVGO','AVY','AWK',
         'AXP','AZO','BA','BAC','BALL','BAX','BBY','BDX','BEN','BF-B',
-        'BIIB','BIO','BK','BKNG','BKR','BLK','BLL','BMY','BR','BRK-B',
+        'BIIB','BIO','BK','BKNG','BKR','BLK','BMY','BR','BRK-B',
         'BSX','BWA','BXP','C','CAG','CAH','CARR','CAT','CB','CBOE',
         'CBRE','CCI','CCL','CDNS','CDW','CE','CEG','CF','CFG','CHD',
         'CHRW','CHTR','CI','CINF','CL','CLX','CMCSA','CME','CMG',
         'CMI','CMS','CNC','CNP','COF','COO','COP','COST','CPB','CPRT',
-        'CRL','CRM','CSCO','CSX','CTAS','CTRA','CTSH','CTVA',
+        'CRL','CRM','CSCO','CSX','CTAS','CTSH','CTVA',
         'CVS','CVX','CZR','D','DAL','DD','DE','DG','DGX','DHI',
         'DHR','DIS','DLR','DLTR','DOV','DOW','DPZ','DRI',
         'DTE','DUK','DVA','DVN','DXC','DXCM','EA','EBAY','ECL','ED',
@@ -1590,7 +1582,7 @@ def get_large_ticker_pool() -> list:
         'FIS','FISV','FITB','FLT','FMC','FOX','FOXA','FRT','FSLR',
         'FTNT','FTV','GD','GE','GILD','GIS','GL','GLW','GM','GNRC',
         'GOOG','GOOGL','GPC','GPN','GRMN','GS','GWW','HAL','HAS','HBAN',
-        'HCA','HD','HES','HIG','HII','HLT','HOLX','HON','HPE','HPQ',
+        'HCA','HD','HIG','HII','HLT','HOLX','HON','HPE','HPQ',
         'HRL','HSIC','HST','HSY','HUM','HWM','IBM','ICE','IDXX','IEX',
         'IFF','ILMN','INCY','INTC','INTU','INVH','IP','IPG','IQV','IR',
         'IRM','ISRG','IT','ITW','IVZ','J','JBHT','JCI','JKHY','JNJ',
@@ -1598,10 +1590,10 @@ def get_large_ticker_pool() -> list:
         'KMX','KO','KR','L','LDOS','LEN','LH','LHX','LIN','LKQ','LLY',
         'LMT','LNC','LNT','LOW','LRCX','LUV','LVS','LW','LYB','LYV',
         'MA','MAA','MAR','MAS','MCD','MCHP','MCK','MCO','MDLZ','MDT',
-        'MET','META','MGM','MHK','MKC','MKTX','MLM','MMC','MMM','MO','MOH','MOS','MPC','MPWR','MRK','MRNA','MRO','MS','MSCI',
+        'MET','META','MGM','MHK','MKC','MKTX','MLM','MMC','MMM','MO','MOH','MOS','MPC','MPWR','MRK','MRNA','MS','MSCI',
         'MSFT','MSI','MTB','MTCH','MTD','MU','NCLH','NDAQ','NEM','NEE',
         'NI','NKE','NOC','NOW','NRG','NSC','NTAP','NTRS','NUE','NVDA',
-        'NVR','NWL','NWS','NWSA','NXPI','O','OGN','OKE','OMC','ON',
+        'NVR','NWL','NWS','NWSA','NXPI','O','OGN','OMC','ON',
         'ORCL','ORLY','OXY','PARA','PAYC','PAYX','PCAR','PCG','PEAK',
         'PEG','PEP','PFE','PFG','PG','PGR','PH','PHM','PKG','PKI',
         'PLD','PM','PNC','PNR','PNW','POOL','PPG','PPL','PRU','PSA',
@@ -1616,18 +1608,17 @@ def get_large_ticker_pool() -> list:
         'USB','V','VFC','VICI','VLO','VMC','VNO','VRSK','VRSN','VRTX',
         'VZ','WAB','WAT','WBA','WBD','WEC','WELL','WFC','WHR','WM',
         'WMB','WMT','WRB','WRK','WST','WTW','WY','WYNN','XEL','XOM',
-        'XRAY','XYL','YUM','ZBH','ZBRA','ZION','ZTS',
-    ]
+        'XRAY','XYL','YUM','ZBH','ZBRA','ZION','ZTS']
 
     # ── LAYER 2 — hardcoded MidCap 400 fallback (~400 tickers) ──────────────
     MIDCAP_HARDCODED: list = [
         # Industrials & Business Services
-        'AAN','ABCB','ABR','ACHC','ACI','ACM','ADNT','AEO','AFG','AGCO',
-        'AIN','AKR','AL','ALG','ALKS','AM','AMG','AMKR','APLE','APO',
+        'ABCB','ABR','ACHC','ACI','ACM','ADNT','AEO','AFG','AGCO',
+        'AIN','AKR','ALG','ALKS','AM','AMG','AMKR','APLE','APO',
         'ARCO','AROC','ASH','ATR','AVAV','AVT','AX','AYI','AZZ',
         'BCO','BDC','BFH','BGS','BHF','BJ','BKH','BLKB','BMI','BOH',
-        'BRC','BRKL','BRX','BSY','BTU','BWXT','CABO','CACI','CAKE','CALX',
-        'CARS','CASY','CC','CCOI','CFR','CHCO','CHE','CHFC','CHH','CIEN',
+        'BRC','BRX','BSY','BTU','BWXT','CABO','CACI','CAKE','CALX',
+        'CARS','CASY','CC','CCOI','CFR','CHCO','CHE','CHH','CIEN',
         'CLB','CNA','CNK','CNO','COHU','COLB','COLM','CPF','CPRX','CRC',
         'CROX','CSL','CW','CWEN','CWK','CWST','CWT',
         # D-G
@@ -1672,9 +1663,8 @@ def get_large_ticker_pool() -> list:
         'EXEL','ITCI','PRCT','QLYS','HALO','CRVL','IIPR','UFPT',
         'PRGS','FCFS','MGNI','GKOS','IRDM','LCII','SAIA','EXPO',
         'MGEE','HWKN','POWI','IPAR','MSEX','SPSC','CSGS','NVCR',
-        'AEIS','ICFI','AFTS','HURN','NTCT','PSMT','EPAC','VRRM','ACLS','FORM','PTGX','TMDX','PCVX','RXST','FTDR','XPEL','UFPT','DXPE','AVNS','LKFN','SKYW','PRAA',
-        'AMSF','HSTM','PFIS','RCUS','CCOI','SANA','NKTR','INVA',
-    ]
+        'AEIS','ICFI','HURN','NTCT','PSMT','EPAC','VRRM','ACLS','FORM','PTGX','TMDX','PCVX','RXST','FTDR','XPEL','UFPT','DXPE','AVNS','LKFN','SKYW','PRAA',
+        'AMSF','HSTM','PFIS','RCUS','CCOI','SANA','NKTR','INVA']
 
     # ── LAYER 1: Probeer Wikipedia live te scrapen ────────────────────────────
     scraped_sp500:  list = []
@@ -1701,8 +1691,7 @@ def get_large_ticker_pool() -> list:
     # MidCap 400 — meerdere URL-varianten proberen
     for _mid_url, _id in [
         ('https://en.wikipedia.org/wiki/List_of_S%26P_400_companies', None),
-        ('https://en.wikipedia.org/wiki/S%26P_400',                   None),
-    ]:
+        ('https://en.wikipedia.org/wiki/S%26P_400',                   None)]:
         if scrape_status['mid400']:
             break
         try:
@@ -1923,23 +1912,22 @@ def run_scanner(strategy: str, pool: list, max_results: int = 9999) -> pd.DataFr
     status_box   = st.empty()
 
     # ── BULK PREFETCH — alle tickers in één yf.download call ──────────────────
-    # Splits in batches van 200 om Yahoo rate-limit te vermijden
-    BULK_BATCH = 200
+    BULK_BATCH = 100
     bulk_cache = {}
 
     for bulk_start in range(0, total, BULK_BATCH):
         bulk_batch = pool[bulk_start:bulk_start + BULK_BATCH]
-        pct_pre = min(bulk_start / total * 0.3, 0.29)  # Eerste 30% voor prefetch
+        pct_pre = min(bulk_start / max(total,1) * 0.4, 0.39)
         progress_bar.progress(pct_pre,
             text=f"⏳ Data ophalen {bulk_start+1}-{min(bulk_start+BULK_BATCH, total)}/{total}...")
         try:
             batch_data = bulk_fetch_scanner_data(tuple(bulk_batch))
             bulk_cache.update(batch_data)
         except Exception:
-            # Fallback: individuele calls voor deze batch
-            pass
+            pass  # Geen fallback — skip silently
 
-    progress_bar.progress(0.3, text=f"✅ Data opgehaald voor {len(bulk_cache)}/{total} tickers · Nu analyseren...")
+    n_fetched = len(bulk_cache)
+    progress_bar.progress(0.4, text=f"✅ Data klaar: {n_fetched}/{total} tickers · Analyseren...")
 
     for idx, ticker in enumerate(pool):
 
@@ -1959,10 +1947,8 @@ def run_scanner(strategy: str, pool: list, max_results: int = 9999) -> pd.DataFr
             )
 
         try:
-            # ── Data ophalen uit bulk cache, fallback naar individuele fetch ───
+            # ── Data uit bulk cache — geen individuele fallback ───────────────
             df = bulk_cache.get(ticker)
-            if df is None:
-                df = fetch_ticker_data_fast(ticker)
             if df is None:
                 failed.append(ticker)
                 continue
@@ -2353,13 +2339,10 @@ def style_scanner_df(df: pd.DataFrame) -> pd.io.formats.style.Styler:
         {'selector': 'thead th', 'props': [
             ('background-color', '#0B0E11'), ('color', '#F0B90B'),
             ('font-family', 'JetBrains Mono, monospace'), ('font-size', '0.78rem'),
-            ('border-bottom', '2px solid #F0B90B'), ('padding', '8px 12px'),
-        ]},
+            ('border-bottom', '2px solid #F0B90B'), ('padding', '8px 12px')]},
         {'selector': 'tbody td', 'props': [
             ('font-family', 'JetBrains Mono, monospace'), ('font-size', '0.8rem'),
-            ('padding', '6px 12px'), ('border-bottom', '1px solid #2B3139'),
-        ]},
-    ])
+            ('padding', '6px 12px'), ('border-bottom', '1px solid #2B3139')]}])
     return styled
 
 
@@ -2757,8 +2740,7 @@ main_tabs = st.tabs([
     "📊 Market Tracker",
     "🔍 Multi-Strategie Scanner",
     "📈 Deep Dive & Grafiek",
-    "📡 Live Monitor",
-])
+    "📡 Live Monitor"])
 
 # ═════════════════════════════════════════════════════════════════════════════
 # TAB 1: CORE MARKET TRACKER  (+ ingebouwde Watchlist)
@@ -2915,8 +2897,7 @@ with main_tabs[0]:
                         ('border-bottom','2px solid #F0B90B')]},
                     {'selector':'tbody td','props':[
                         ('font-size','0.8rem'),('padding','5px 8px'),
-                        ('border-bottom','1px solid #2B3139')]},
-                ])
+                        ('border-bottom','1px solid #2B3139')]}])
                 return s
 
             st.dataframe(style_mobile(mobile_df), width='stretch', height=600)
@@ -3075,13 +3056,10 @@ with main_tabs[0]:
                         {'selector': 'thead th', 'props': [
                             ('background-color', '#0B0E11'), ('color', '#F0B90B'),
                             ('font-family', 'JetBrains Mono, monospace'), ('font-size', '0.78rem'),
-                            ('border-bottom', '2px solid #F0B90B'), ('padding', '8px 12px'),
-                        ]},
+                            ('border-bottom', '2px solid #F0B90B'), ('padding', '8px 12px')]},
                         {'selector': 'tbody td', 'props': [
                             ('font-family', 'JetBrains Mono, monospace'), ('font-size', '0.8rem'),
-                            ('padding', '6px 12px'), ('border-bottom', '1px solid #2B3139'),
-                        ]},
-                    ])
+                            ('padding', '6px 12px'), ('border-bottom', '1px solid #2B3139')]}])
                     return s
 
                 wl_mobile = st.session_state.get('mobile_view', False)
@@ -3109,8 +3087,12 @@ with main_tabs[1]:
     st.markdown("### 🔍 Multi-Strategie Scanner — 600+ Tickers")
     st.markdown('<small style="color:#848E9C;">S&P 500 · S&P MidCap 400 · Europese Top · Multi-Timeframe Validatie</small>', unsafe_allow_html=True)
 
-    # Pool alvast laden bij openen tab — wrapper update ook session_state voor sidebar
-    _preload_pool = load_ticker_pool()
+    # Toon pool-grootte zonder data te laden
+    _own_count = len(st.session_state.get('main_market_tickers', DEFAULT_TICKERS))
+    if 'total_ticker_count' not in st.session_state:
+        st.session_state['total_ticker_count'] = _own_count
+        st.session_state['scan_pool_size']     = _own_count
+        st.session_state['pool_scrape_status'] = '📋 Eigen tickerlijst'
 
     st.markdown("---")
 
@@ -3935,8 +3917,7 @@ with main_tabs[2]:
                     ("🎯 TAKE-PROFIT 2 (Partieel 40%)", take_profit_2,
                      f"Doel R:R {reward_ratio}:1"),
                     ("🎯 TAKE-PROFIT 3 (Resistance Target)", take_profit_3,
-                     f"Werkelijke R:R <b style='color:{rr_color};'>{actual_rr}:1</b>"),
-                ]:
+                     f"Werkelijke R:R <b style='color:{rr_color};'>{actual_rr}:1</b>")]:
                     pct_gain = round(((tp_val - instap) / instap) * 100, 2)
                     gain_pts = round(tp_val - instap, 2)
                     st.markdown(f"""
