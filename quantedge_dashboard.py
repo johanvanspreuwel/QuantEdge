@@ -827,10 +827,56 @@ def fetch_live_price(ticker: str) -> dict:
 
 
 @st.cache_data(ttl=CACHE_PRICE_TTL)
+def bulk_fetch_scanner_data(tickers: tuple) -> dict:
+    """
+    Haal data op voor meerdere tickers tegelijk via yf.download().
+    Dit is 10-20x sneller dan individuele calls per ticker.
+    Retourneert een dict: {ticker: DataFrame}
+    """
+    result = {}
+    if not tickers:
+        return result
+
+    ticker_str = " ".join(tickers)
+    try:
+        df_all = yf.download(
+            ticker_str,
+            period="3mo",
+            interval="1d",
+            progress=False,
+            auto_adjust=True,
+            group_by="ticker",
+        )
+        if df_all is None or df_all.empty:
+            return result
+
+        # Bij meerdere tickers: MultiIndex kolommen per ticker
+        if isinstance(df_all.columns, pd.MultiIndex):
+            for ticker in tickers:
+                try:
+                    df_t = df_all[ticker].copy()
+                    df_t = df_t.dropna(subset=['Close'])
+                    if len(df_t) >= DATA_MIN_ROWS_SCAN:
+                        result[ticker] = df_t
+                except Exception:
+                    pass
+        else:
+            # Enkele ticker — geen MultiIndex
+            if len(tickers) == 1:
+                df_all = df_all.dropna(subset=['Close'])
+                if len(df_all) >= DATA_MIN_ROWS_SCAN:
+                    result[tickers[0]] = df_all
+
+    except Exception:
+        pass
+
+    return result
+
+
+@st.cache_data(ttl=CACHE_PRICE_TTL)
 def fetch_ticker_data_fast(ticker: str) -> pd.DataFrame | None:
     """
-    Snelle data-fetch voor de scanner — alleen Close/Volume, geen info.
-    Gebruikt 3mo ipv 6mo voor snelheid. Geen prepost (sneller).
+    Snelle data-fetch voor losse ticker — fallback als bulk niet werkt.
     """
     try:
         df = yf.download(ticker, period="3mo", interval="1d",
@@ -1737,21 +1783,31 @@ def get_large_ticker_pool() -> list:
     return volledige_pool, meta
 
 
-def load_ticker_pool() -> list:
+def load_ticker_pool(use_large_pool: bool = False) -> list:
     """
-    Wrapper om get_large_ticker_pool() aan te roepen en session_state bij te werken.
-    Gebruik deze functie in de UI — nooit get_large_ticker_pool() direct aanroepen
-    vanuit code die session_state nodig heeft (mag niet binnen @st.cache_data).
+    Geef de tickerlijst terug voor de scanner.
+    Standaard: alleen de eigen tickers van de gebruiker (snel, geen rate-limit).
+    Optioneel: grote pool van 1000+ tickers (langzaam, kans op rate-limit).
     """
-    pool, meta = get_large_ticker_pool()
-    st.session_state['total_ticker_count']  = meta['total']
-    st.session_state['pool_sp500']          = meta['sp500']
-    st.session_state['pool_midcap']         = meta['midcap']
-    st.session_state['pool_europe']         = meta['europe']
-    st.session_state['pool_extras']         = meta['extras']
-    st.session_state['pool_scrape_status']  = meta['status_str']
-    st.session_state['scan_pool_size']      = meta['total']
-    return pool
+    if not use_large_pool:
+        # Gebruik alleen eigen tickers — snel en betrouwbaar
+        pool = list(st.session_state.get('main_market_tickers', DEFAULT_TICKERS))
+        total = len(pool)
+        st.session_state['total_ticker_count'] = total
+        st.session_state['scan_pool_size']     = total
+        st.session_state['pool_scrape_status'] = '📋 Eigen tickerlijst'
+        return pool
+    else:
+        # Grote pool — langzaam, kans op Yahoo rate-limit
+        pool, meta = get_large_ticker_pool()
+        st.session_state['total_ticker_count']  = meta['total']
+        st.session_state['pool_sp500']          = meta['sp500']
+        st.session_state['pool_midcap']         = meta['midcap']
+        st.session_state['pool_europe']         = meta['europe']
+        st.session_state['pool_extras']         = meta['extras']
+        st.session_state['pool_scrape_status']  = meta['status_str']
+        st.session_state['scan_pool_size']      = meta['total']
+        return pool
 
 
 
@@ -1855,49 +1911,58 @@ def compute_multi_timeframe_check(ticker: str) -> dict:
 def run_scanner(strategy: str, pool: list, max_results: int = 9999) -> pd.DataFrame:
     """
     Scan de volledige tickerpool op basis van de geselecteerde strategie.
-
-    - GEEN vroege break of head()-limiet — alle hits worden geretourneerd.
-    - max_results wordt genegeerd voor alle strategieën behalve event_sentiment
-      (die heeft een eigen SCAN_SENT_MAX_RESULTS constante voor ruis-controle).
-    - Voortgangsbalk loopt altijd over len(pool), ongeacht hits of fouten.
-    - Gefaalde tickers worden gelogd maar onderbreken de loop niet.
+    Gebruikt bulk-fetch (alle tickers in één yf.download call) voor snelheid.
     """
-    print(f"DEBUG: Totaal aantal tickers aangeboden aan loop: {len(pool)}")
-
     rows        = []
-    failed      = []           # tickers waarvoor geen data beschikbaar was
-    errored     = []           # tickers met een onverwachte fout
+    failed      = []
+    errored     = []
     total       = len(pool)
 
-    # ── Voortgangsbalk — altijd gebaseerd op de volledige pool ────────────────
-    progress_bar = st.progress(0.0, text=f"⏳ Initialiseren scan van {total} tickers...")
-    status_box   = st.empty()  # Tweede regel voor live statistieken
+    # ── Voortgangsbalk ────────────────────────────────────────────────────────
+    progress_bar = st.progress(0.0, text=f"⏳ Bulk data ophalen voor {total} tickers...")
+    status_box   = st.empty()
+
+    # ── BULK PREFETCH — alle tickers in één yf.download call ──────────────────
+    # Splits in batches van 200 om Yahoo rate-limit te vermijden
+    BULK_BATCH = 200
+    bulk_cache = {}
+
+    for bulk_start in range(0, total, BULK_BATCH):
+        bulk_batch = pool[bulk_start:bulk_start + BULK_BATCH]
+        pct_pre = min(bulk_start / total * 0.3, 0.29)  # Eerste 30% voor prefetch
+        progress_bar.progress(pct_pre,
+            text=f"⏳ Data ophalen {bulk_start+1}-{min(bulk_start+BULK_BATCH, total)}/{total}...")
+        try:
+            batch_data = bulk_fetch_scanner_data(tuple(bulk_batch))
+            bulk_cache.update(batch_data)
+        except Exception:
+            # Fallback: individuele calls voor deze batch
+            pass
+
+    progress_bar.progress(0.3, text=f"✅ Data opgehaald voor {len(bulk_cache)}/{total} tickers · Nu analyseren...")
 
     for idx, ticker in enumerate(pool):
 
-        # Voortgang: altijd op basis van idx / total, nooit op hits
-        pct = (idx + 1) / total
-        if idx % 10 == 0 or idx == total - 1:
+        pct = 0.3 + (idx + 1) / total * 0.7  # Analyse: 30-100%
+        if idx % 20 == 0 or idx == total - 1:
             progress_bar.progress(
                 min(pct, 1.0),
-                text=f"⏳ Scanning {idx + 1}/{total} · {len(rows)} hits · {len(failed)} geen data · {len(errored)} fouten"
+                text=f"⏳ Analyseren {idx + 1}/{total} · {len(rows)} hits · {ticker}"
             )
             status_box.markdown(
                 f"<small style='color:#848E9C; font-family:monospace;'>"
                 f"Huidig: <b style='color:#F0B90B;'>{ticker}</b> &nbsp;|&nbsp; "
                 f"Hits: <b style='color:#00C853;'>{len(rows)}</b> &nbsp;|&nbsp; "
-                f"Geen data: {len(failed)} &nbsp;|&nbsp; Fouten: {len(errored)}"
+                f"Geen data: {len(failed)}"
                 f"</small>",
                 unsafe_allow_html=True,
             )
 
-        # ── Verborgen break verwijderd ────────────────────────────────────────
-        # NIET: if len(rows) >= max_results: break
-        # De volledige pool wordt altijd doorlopen; filtering gebeurt achteraf.
-
         try:
-            # ── Data ophalen — snelle fetch voor scanner ──────────────────────
-            df = fetch_ticker_data_fast(ticker)
+            # ── Data ophalen uit bulk cache, fallback naar individuele fetch ───
+            df = bulk_cache.get(ticker)
+            if df is None:
+                df = fetch_ticker_data_fast(ticker)
             if df is None:
                 failed.append(ticker)
                 continue
@@ -3141,10 +3206,16 @@ with main_tabs[1]:
 
         sc1, sc2 = st.columns([1, 3])
         with sc1:
-            # Batch scanner — verwerkt 50 tickers per keer
+            # Pool keuze
+            use_large = st.toggle(
+                "🌐 Grote pool (1000+ tickers)",
+                value=False,
+                key="use_large_pool",
+                help="Uit = alleen jouw eigen tickers (snel). Aan = volledige S&P500 + MidCap + Europa (langzaam, kans op Yahoo rate-limit)."
+            )
+
             BATCH_SIZE = 50
 
-            # Initialiseer scan-state
             if 'scan_pool'    not in st.session_state: st.session_state['scan_pool']    = []
             if 'scan_offset'  not in st.session_state: st.session_state['scan_offset']  = 0
             if 'scan_rows'    not in st.session_state: st.session_state['scan_rows']    = []
@@ -3154,8 +3225,7 @@ with main_tabs[1]:
             with col_btn1:
                 if st.button("▶ Start / Hervat Scan", key="btn_start_scan"):
                     if not st.session_state['scan_running']:
-                        # Nieuwe scan starten
-                        pool = load_ticker_pool()
+                        pool = load_ticker_pool(use_large_pool=use_large)
                         st.session_state['scan_pool']    = pool
                         st.session_state['scan_offset']  = 0
                         st.session_state['scan_rows']    = []
