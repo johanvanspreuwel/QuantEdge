@@ -2260,8 +2260,7 @@ def run_scanner(strategy: str, pool: list, max_results: int = 9999) -> pd.DataFr
                 row.update(extra_info)
                 rows.append(row)
                 print(f"DEBUG HIT [{len(rows):03d}]: {ticker} | RSI={int(rsi_val)} "
-                      f"| MTF={mtf['status']} | R:R={_rr_scan} "
-                      f"| VETO={'JA: '+mtf['rr_veto_reason'] if mtf['rr_veto'] else 'nee'}")
+                      f"| Status={_status} | R:R={_rr_scan}")
 
         except Exception as exc:
             errored.append(ticker)
