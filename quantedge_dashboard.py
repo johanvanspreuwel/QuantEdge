@@ -825,7 +825,7 @@ def fetch_live_price(ticker: str) -> dict:
     return result
 
 
-@st.cache_data(ttl=CACHE_PRICE_TTL)
+@st.cache_data(ttl=300)   # 5 minuten cache — voorkomt herhaalde downloads
 def bulk_fetch_scanner_data(tickers: tuple) -> dict:
     """
     Haal data op voor meerdere tickers tegelijk via yf.download().
@@ -1911,23 +1911,26 @@ def run_scanner(strategy: str, pool: list, max_results: int = 9999) -> pd.DataFr
     progress_bar = st.progress(0.0, text=f"⏳ Bulk data ophalen voor {total} tickers...")
     status_box   = st.empty()
 
-    # ── BULK PREFETCH — alle tickers in één yf.download call ──────────────────
-    BULK_BATCH = 100
+    # ── BULK PREFETCH — tickers in kleine batches met pauze ──────────────────
+    BULK_BATCH = 25   # Klein genoeg voor Yahoo rate-limit
     bulk_cache = {}
 
     for bulk_start in range(0, total, BULK_BATCH):
         bulk_batch = pool[bulk_start:bulk_start + BULK_BATCH]
-        pct_pre = min(bulk_start / max(total,1) * 0.4, 0.39)
+        pct_pre = min(bulk_start / max(total, 1) * 0.4, 0.39)
         progress_bar.progress(pct_pre,
             text=f"⏳ Data ophalen {bulk_start+1}-{min(bulk_start+BULK_BATCH, total)}/{total}...")
         try:
             batch_data = bulk_fetch_scanner_data(tuple(bulk_batch))
             bulk_cache.update(batch_data)
         except Exception:
-            pass  # Geen fallback — skip silently
+            pass
+        # Kleine pauze tussen batches om rate-limit te vermijden
+        import time as _time
+        _time.sleep(0.5)
 
     n_fetched = len(bulk_cache)
-    progress_bar.progress(0.4, text=f"✅ Data klaar: {n_fetched}/{total} tickers · Analyseren...")
+    progress_bar.progress(0.4, text=f"✅ Data klaar: {n_fetched}/{total} · Analyseren...")
 
     for idx, ticker in enumerate(pool):
 
