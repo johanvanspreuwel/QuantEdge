@@ -1926,7 +1926,12 @@ def run_scanner(strategy: str, pool: list, max_results: int = 9999) -> pd.DataFr
         except Exception:
             continue
 
+    print(f"DEBUG: Scan gestart. Strategie={strategy} | Pool={total} tickers | "
+          f"Data beschikbaar voor {len(bulk_cache)} tickers")
+
     for idx, ticker in enumerate(pool):
+        if idx % 100 == 0:
+            print(f"DEBUG: Voortgang {idx}/{total} | Hits tot nu toe={len(rows)}")
         try:
             # ── Data uit cache ──────────────────────────────────────────────
             df = bulk_cache.get(ticker)
@@ -1941,9 +1946,14 @@ def run_scanner(strategy: str, pool: list, max_results: int = 9999) -> pd.DataFr
             volume = df['Volume'].squeeze()
             last_price = float(close.iloc[-1])
             rsi_val    = compute_rsi(close, RSI_PERIOD)
-            ub, mb, lb = compute_bollinger_series(close, BB_PERIOD, BB_STD_NORMAL)
-            ub25, mb25, lb25 = compute_bollinger_series(close, BB_PERIOD, BB_STD_WIDE)
             n = len(close)
+
+            # Bollinger bands alleen berekenen voor strategieën die ze nodig
+            # hebben — scheelt rekenwerk over 1000+ tickers voor o.a.
+            # alpha_scanner, sr_bounce, momentum_low_float.
+            if strategy in ("mean_reversion", "vol_squeeze"):
+                ub, mb, lb = compute_bollinger_series(close, BB_PERIOD, BB_STD_NORMAL)
+                ub25, mb25, lb25 = compute_bollinger_series(close, BB_PERIOD, BB_STD_WIDE)
 
             match      = False
             extra_info = {}
@@ -2236,7 +2246,6 @@ def run_scanner(strategy: str, pool: list, max_results: int = 9999) -> pd.DataFr
                     'RSI (14D)': str(int(rsi_val)),
                     'R:R':       str(_rr_scan),
                     'R:R Status':_rr_note,
-                    'Patroon':   detect_candlestick_pattern(df),
                     'MTF Status':_status,
                     '1W Trend':  _wk_trend,
                     '1H Volume': '–',
@@ -2256,7 +2265,6 @@ def run_scanner(strategy: str, pool: list, max_results: int = 9999) -> pd.DataFr
     # ── Loop klaar — opruimen UI ──────────────────────────────────────────────
     print(f"DEBUG: Scan klaar. Pool={total} | Hits={len(rows)} | Geen data={len(failed)} | Fouten={len(errored)}")
 
-    print(f"DEBUG: Scan klaar. Pool={total} | Hits={len(rows)} | Geen data={len(failed)} | Fouten={len(errored)}")
     if failed:
         print(f"DEBUG GEEN DATA: {', '.join(failed[:30])}{'...' if len(failed)>30 else ''}")
 
