@@ -1874,28 +1874,57 @@ def run_scanner(strategy: str, pool: list, max_results: int = 9999) -> pd.DataFr
     errored     = []
     total       = len(pool)
 
-    # ── PER-TICKER FETCH — individuele yf.Ticker().history() calls ───────────
-    # Dit is de architectuur uit de eerder werkende versie (PyQt6 native app),
-    # die de grote pool van 1000+ tickers WEL aankon zonder rate-limits.
-    # Bulk yf.download() met tientallen symbolen in 1 request triggert
-    # YFRateLimitError op Streamlit Cloud; individuele .history() calls niet.
-    data_cache = {}
-    for idx, ticker in enumerate(pool):
+    # ── SINGLE BULK DOWNLOAD — alle tickers in 1 yf.download() call ──────────
+    # yfinance batcht intern efficiënt en gebruikt 1 gedeelde sessie wanneer
+    # alle symbolen in 1 keer worden meegegeven. Veel kleine sequentiële of
+    # batch-calls triggeren elk een nieuwe "burst" en daardoor rate-limits;
+    # 1 grote call is de meest robuuste aanpak voor 1000+ tickers.
+    bulk_cache = {}
+    try:
+        ticker_str = " ".join(pool)
+        df_all = yf.download(
+            ticker_str,
+            period=DATA_SCAN_PERIOD,
+            interval="1d",
+            progress=False,
+            auto_adjust=True,
+            group_by="ticker",
+            threads=True,
+        )
+        if df_all is not None and not df_all.empty:
+            if isinstance(df_all.columns, pd.MultiIndex):
+                for ticker in pool:
+                    try:
+                        df_t = df_all[ticker].copy()
+                        df_t = df_t.dropna(subset=['Close'])
+                        if len(df_t) >= DATA_MIN_ROWS_SCAN:
+                            bulk_cache[ticker] = df_t
+                    except Exception:
+                        continue
+            elif len(pool) == 1:
+                df_t = df_all.dropna(subset=['Close'])
+                if len(df_t) >= DATA_MIN_ROWS_SCAN:
+                    bulk_cache[pool[0]] = df_t
+    except Exception:
+        pass
+
+    # ── FALLBACK — kleine restgroep individueel ophalen (cap om timeouts te
+    #    voorkomen als de bulk-call grotendeels faalde) ─────────────────────
+    missing = [t for t in pool if t not in bulk_cache]
+    FALLBACK_CAP = 100
+    for ticker in missing[:FALLBACK_CAP]:
         try:
-            t_obj = yf.Ticker(ticker)
-            df_t = t_obj.history(period=DATA_SCAN_PERIOD, interval="1d")
+            df_t = yf.Ticker(ticker).history(period=DATA_SCAN_PERIOD, interval="1d")
             if df_t is None or df_t.empty:
                 continue
             if isinstance(df_t.columns, pd.MultiIndex):
                 df_t = df_t.copy()
                 df_t.columns = [c[0] for c in df_t.columns]
             df_t = df_t.dropna(subset=['Close'])
-            if len(df_t) < DATA_MIN_ROWS_SCAN:
-                continue
-            data_cache[ticker] = df_t
+            if len(df_t) >= DATA_MIN_ROWS_SCAN:
+                bulk_cache[ticker] = df_t
         except Exception:
             continue
-    bulk_cache = data_cache
 
     for idx, ticker in enumerate(pool):
         try:
