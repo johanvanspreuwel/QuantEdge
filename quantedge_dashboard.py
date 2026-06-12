@@ -18,6 +18,7 @@ import os
 from datetime import datetime, timedelta
 import warnings
 import math
+import time
 warnings.filterwarnings("ignore")
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -831,53 +832,6 @@ def fetch_live_price(ticker: str) -> dict:
             result['change_ext'] = round(
                 ((result['extended'] - regular) / regular) * 100, 2
             )
-
-    except Exception:
-        pass
-
-    return result
-
-
-@st.cache_data(ttl=300)   # 5 minuten cache — voorkomt herhaalde downloads
-def bulk_fetch_scanner_data(tickers: tuple) -> dict:
-    """
-    Haal data op voor meerdere tickers tegelijk via yf.download().
-    Dit is 10-20x sneller dan individuele calls per ticker.
-    Retourneert een dict: {ticker: DataFrame}
-    """
-    result = {}
-    if not tickers:
-        return result
-
-    ticker_str = " ".join(tickers)
-    try:
-        df_all = yf.download(
-            ticker_str,
-            period="3mo",
-            interval="1d",
-            progress=False,
-            auto_adjust=True,
-            group_by="ticker",
-        )
-        if df_all is None or df_all.empty:
-            return result
-
-        # Bij meerdere tickers: MultiIndex kolommen per ticker
-        if isinstance(df_all.columns, pd.MultiIndex):
-            for ticker in tickers:
-                try:
-                    df_t = df_all[ticker].copy()
-                    df_t = df_t.dropna(subset=['Close'])
-                    if len(df_t) >= DATA_MIN_ROWS_SCAN:
-                        result[ticker] = df_t
-                except Exception:
-                    pass
-        else:
-            # Enkele ticker — geen MultiIndex
-            if len(tickers) == 1:
-                df_all = df_all.dropna(subset=['Close'])
-                if len(df_all) >= DATA_MIN_ROWS_SCAN:
-                    result[tickers[0]] = df_all
 
     except Exception:
         pass
@@ -1920,30 +1874,36 @@ def run_scanner(strategy: str, pool: list, max_results: int = 9999) -> pd.DataFr
     errored     = []
     total       = len(pool)
 
-    # ── BULK PREFETCH — tickers in batches van 25 ─────────────────────────────
-    BULK_BATCH = 25
-    bulk_cache = {}
-
-    for bulk_start in range(0, total, BULK_BATCH):
-        bulk_batch = pool[bulk_start:bulk_start + BULK_BATCH]
+    # ── PER-TICKER FETCH — individuele yf.Ticker().history() calls ───────────
+    # Dit is de architectuur uit de eerder werkende versie (PyQt6 native app),
+    # die de grote pool van 1000+ tickers WEL aankon zonder rate-limits.
+    # Bulk yf.download() met tientallen symbolen in 1 request triggert
+    # YFRateLimitError op Streamlit Cloud; individuele .history() calls niet.
+    data_cache = {}
+    for idx, ticker in enumerate(pool):
         try:
-            batch_data = bulk_fetch_scanner_data(tuple(bulk_batch))
-            bulk_cache.update(batch_data)
+            t_obj = yf.Ticker(ticker)
+            df_t = t_obj.history(period=DATA_SCAN_PERIOD, interval="1d")
+            if df_t is None or df_t.empty:
+                continue
+            if isinstance(df_t.columns, pd.MultiIndex):
+                df_t = df_t.copy()
+                df_t.columns = [c[0] for c in df_t.columns]
+            df_t = df_t.dropna(subset=['Close'])
+            if len(df_t) < DATA_MIN_ROWS_SCAN:
+                continue
+            data_cache[ticker] = df_t
         except Exception:
-            pass
+            continue
+    bulk_cache = data_cache
 
     for idx, ticker in enumerate(pool):
         try:
-            # ── Data uit bulk cache ───────────────────────────────────────────
+            # ── Data uit cache ──────────────────────────────────────────────
             df = bulk_cache.get(ticker)
             if df is None:
                 failed.append(ticker)
                 continue
-
-            # Zorg dat kolommen 1D-series zijn
-            for col in list(df.columns):
-                if hasattr(df[col], 'squeeze'):
-                    df[col] = df[col].squeeze()
 
             close  = df['Close'].squeeze()
             high   = df['High'].squeeze()
