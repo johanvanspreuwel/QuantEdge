@@ -1912,56 +1912,29 @@ def compute_multi_timeframe_check(ticker: str) -> dict:
 
 def run_scanner(strategy: str, pool: list, max_results: int = 9999) -> pd.DataFrame:
     """
-    Scan de volledige tickerpool op basis van de geselecteerde strategie.
-    Gebruikt bulk-fetch (alle tickers in één yf.download call) voor snelheid.
+    Scan de tickerpool op basis van de geselecteerde strategie.
+    Geen UI-updates tijdens de scan — alleen eindresultaat tonen.
     """
     rows        = []
     failed      = []
     errored     = []
     total       = len(pool)
 
-    # ── Voortgangsbalk ────────────────────────────────────────────────────────
-    progress_bar = st.progress(0.0, text=f"⏳ Bulk data ophalen voor {total} tickers...")
-    status_box   = st.empty()
-
-    # ── BULK PREFETCH — tickers in kleine batches met pauze ──────────────────
-    BULK_BATCH = 25   # Klein genoeg voor Yahoo rate-limit
+    # ── BULK PREFETCH — tickers in batches van 25 ─────────────────────────────
+    BULK_BATCH = 25
     bulk_cache = {}
 
     for bulk_start in range(0, total, BULK_BATCH):
         bulk_batch = pool[bulk_start:bulk_start + BULK_BATCH]
-        pct_pre = min(bulk_start / max(total, 1) * 0.4, 0.39)
-        progress_bar.progress(pct_pre,
-            text=f"⏳ Data ophalen {bulk_start+1}-{min(bulk_start+BULK_BATCH, total)}/{total}...")
         try:
             batch_data = bulk_fetch_scanner_data(tuple(bulk_batch))
             bulk_cache.update(batch_data)
         except Exception:
             pass
-        # Geen sleep nodig
-
-    n_fetched = len(bulk_cache)
-    progress_bar.progress(0.4, text=f"✅ Data klaar: {n_fetched}/{total} · Analyseren...")
 
     for idx, ticker in enumerate(pool):
-
-        pct = 0.3 + (idx + 1) / total * 0.7  # Analyse: 30-100%
-        if idx % 20 == 0 or idx == total - 1:
-            progress_bar.progress(
-                min(pct, 1.0),
-                text=f"⏳ Analyseren {idx + 1}/{total} · {len(rows)} hits · {ticker}"
-            )
-            status_box.markdown(
-                f"<small style='color:#848E9C; font-family:monospace;'>"
-                f"Huidig: <b style='color:#F0B90B;'>{ticker}</b> &nbsp;|&nbsp; "
-                f"Hits: <b style='color:#00C853;'>{len(rows)}</b> &nbsp;|&nbsp; "
-                f"Geen data: {len(failed)}"
-                f"</small>",
-                unsafe_allow_html=True,
-            )
-
         try:
-            # ── Data uit bulk cache — geen individuele fallback ───────────────
+            # ── Data uit bulk cache ───────────────────────────────────────────
             df = bulk_cache.get(ticker)
             if df is None:
                 failed.append(ticker)
@@ -2292,8 +2265,7 @@ def run_scanner(strategy: str, pool: list, max_results: int = 9999) -> pd.DataFr
             continue  # Loop gaat altijd door, ook bij onverwachte fouten
 
     # ── Loop klaar — opruimen UI ──────────────────────────────────────────────
-    progress_bar.progress(1.0, text=f"✅ Scan voltooid: {total} tickers · {len(rows)} hits · {len(failed)} geen data · {len(errored)} fouten")
-    status_box.empty()
+    print(f"DEBUG: Scan klaar. Pool={total} | Hits={len(rows)} | Geen data={len(failed)} | Fouten={len(errored)}")
 
     print(f"DEBUG: Scan klaar. Pool={total} | Hits={len(rows)} | Geen data={len(failed)} | Fouten={len(errored)}")
     if failed:
