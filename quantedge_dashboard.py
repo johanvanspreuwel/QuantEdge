@@ -1864,22 +1864,16 @@ def compute_multi_timeframe_check(ticker: str) -> dict:
     return result
 
 
-def run_scanner(strategy: str, pool: list, max_results: int = 9999) -> pd.DataFrame:
+@st.cache_data(ttl=300, show_spinner=False)
+def _bulk_download_pool(pool: tuple) -> dict:
     """
-    Scan de tickerpool op basis van de geselecteerde strategie.
-    Geen UI-updates tijdens de scan — alleen eindresultaat tonen.
+    Download dagdata voor de volledige pool in 1 yf.download() call.
+    Gecached voor 5 minuten — een rerun (bv. door een websocket-reconnect
+    tijdens een lange scan, waardoor het lijkt of de scanner "stopt")
+    hergebruikt dit resultaat direct in plaats van opnieuw 1000+ tickers
+    te downloaden.
     """
-    rows        = []
-    failed      = []
-    errored     = []
-    total       = len(pool)
-
-    # ── SINGLE BULK DOWNLOAD — alle tickers in 1 yf.download() call ──────────
-    # yfinance batcht intern efficiënt en gebruikt 1 gedeelde sessie wanneer
-    # alle symbolen in 1 keer worden meegegeven. Veel kleine sequentiële of
-    # batch-calls triggeren elk een nieuwe "burst" en daardoor rate-limits;
-    # 1 grote call is de meest robuuste aanpak voor 1000+ tickers.
-    bulk_cache = {}
+    result = {}
     try:
         ticker_str = " ".join(pool)
         df_all = yf.download(
@@ -1898,15 +1892,34 @@ def run_scanner(strategy: str, pool: list, max_results: int = 9999) -> pd.DataFr
                         df_t = df_all[ticker].copy()
                         df_t = df_t.dropna(subset=['Close'])
                         if len(df_t) >= DATA_MIN_ROWS_SCAN:
-                            bulk_cache[ticker] = df_t
+                            result[ticker] = df_t
                     except Exception:
                         continue
             elif len(pool) == 1:
                 df_t = df_all.dropna(subset=['Close'])
                 if len(df_t) >= DATA_MIN_ROWS_SCAN:
-                    bulk_cache[pool[0]] = df_t
+                    result[pool[0]] = df_t
     except Exception:
         pass
+    return result
+
+
+def run_scanner(strategy: str, pool: list, max_results: int = 9999) -> pd.DataFrame:
+    """
+    Scan de tickerpool op basis van de geselecteerde strategie.
+    Geen UI-updates tijdens de scan — alleen eindresultaat tonen.
+    """
+    rows        = []
+    failed      = []
+    errored     = []
+    total       = len(pool)
+
+    # ── BULK DOWNLOAD (gecached) — alle tickers in 1 yf.download() call ──────
+    # @st.cache_data zorgt dat een herstart van het script (bv. door een
+    # websocket-reconnect die de UI laat lijken alsof de scan "stopt") niet
+    # opnieuw 1037 tickers downloadt — binnen 5 minuten komt het resultaat
+    # direct uit cache en is de scan vrijwel instant.
+    bulk_cache = _bulk_download_pool(tuple(pool))
 
     # ── FALLBACK — kleine restgroep individueel ophalen (cap om timeouts te
     #    voorkomen als de bulk-call grotendeels faalde) ─────────────────────
@@ -1925,6 +1938,7 @@ def run_scanner(strategy: str, pool: list, max_results: int = 9999) -> pd.DataFr
                 bulk_cache[ticker] = df_t
         except Exception:
             continue
+
 
     print(f"DEBUG: Scan gestart. Strategie={strategy} | Pool={total} tickers | "
           f"Data beschikbaar voor {len(bulk_cache)} tickers")
@@ -3183,9 +3197,13 @@ with main_tabs[1]:
 
             if st.button("▶ Start Scan", key="btn_start_scan"):
                 pool = load_ticker_pool(use_large_pool=use_large)
-                with st.empty():
-                    st.markdown(f"⏳ Scanning {len(pool)} tickers...")
-                results = run_scanner(st.session_state.active_strategy, pool)
+                with st.status(f"⏳ Scanning {len(pool)} tickers...", expanded=True) as status_ctx:
+                    st.write("Data ophalen en analyseren — dit kan 1-3 minuten duren bij de grote pool.")
+                    results = run_scanner(st.session_state.active_strategy, pool)
+                    status_ctx.update(
+                        label=f"✅ Scan voltooid — {len(results)} hits gevonden",
+                        state="complete"
+                    )
                 st.session_state.scanner_results = results
                 st.rerun()
 
