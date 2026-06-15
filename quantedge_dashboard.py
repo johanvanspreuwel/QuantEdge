@@ -865,32 +865,40 @@ def fetch_ticker_data(ticker: str, period: str = "3mo"):
     """
     Haal OHLCV-data op via yfinance met caching.
     Gebruikt prepost=True zodat extended-hours kaarsen beschikbaar zijn.
+    Fallback naar yf.download() voor Europese/exotische tickers waarbij
+    .history() soms leeg teruggeeft ondanks geldige ticker.
     """
-    try:
-        t  = yf.Ticker(ticker)
-        df = t.history(period=period, prepost=True)  # ← aftermarket/premarket inbegrepen
-
+    def _clean_df(df):
+        """Normaliseer MultiIndex, valideer kolommen, verwijder NaN-close rijen."""
         if df is None or df.empty or len(df) < DATA_MIN_ROWS_FETCH:
-            return None, None
-
-        # ── MultiIndex flatten ──────────────────────────────────────────────
+            return None
         if isinstance(df.columns, pd.MultiIndex):
+            df = df.copy()
             df.columns = [col[0] for col in df.columns]
-
-        # Zorg dat de verwachte OHLCV-kolommen aanwezig zijn
         required = {'Open', 'High', 'Low', 'Close', 'Volume'}
         if not required.issubset(set(df.columns)):
-            return None, None
-
-        # Verwijder rijen waar Close NaN is
+            return None
         df = df.dropna(subset=['Close'])
         if len(df) < DATA_MIN_ROWS_FETCH:
-            return None, None
-
-        # Zorg dat elke kolom een 1D-serie is
+            return None
         for col in list(df.columns):
             if hasattr(df[col], 'squeeze'):
                 df[col] = df[col].squeeze()
+        return df
+
+    try:
+        t  = yf.Ticker(ticker)
+        df = t.history(period=period, prepost=True)
+        df = _clean_df(df)
+
+        # Fallback: yf.download werkt soms beter voor Europese/speciale tickers
+        if df is None:
+            df_dl = yf.download(ticker, period=period, interval="1d",
+                                progress=False, auto_adjust=True)
+            df = _clean_df(df_dl)
+
+        if df is None:
+            return None, None
 
         info = {}
         try:
@@ -1872,6 +1880,11 @@ def _bulk_download_pool(pool: tuple) -> dict:
     tijdens een lange scan, waardoor het lijkt of de scanner "stopt")
     hergebruikt dit resultaat direct in plaats van opnieuw 1000+ tickers
     te downloaden.
+
+    FIX: yfinance normaliseert ticker-keys in MultiIndex soms anders dan
+    de originele ticker-string (bijv. 'ASML.AS' → 'ASML' of omgekeerd).
+    We bouwen een lookup-map van genormaliseerde key → originele ticker
+    zodat Europese en andere speciale tickers altijd gevonden worden.
     """
     result = {}
     try:
@@ -1887,16 +1900,36 @@ def _bulk_download_pool(pool: tuple) -> dict:
         )
         if df_all is not None and not df_all.empty:
             if isinstance(df_all.columns, pd.MultiIndex):
+                # Haal de top-level tickerkeys op uit de MultiIndex
+                available_keys = list(df_all.columns.get_level_values(0).unique())
+                # Normaliseer beide kanten (upper + punt→koppelteken) voor matching
+                def _norm(t: str) -> str:
+                    return str(t).upper().replace('-', '.').replace(' ', '')
+                norm_to_avail = {_norm(k): k for k in available_keys}
+
                 for ticker in pool:
                     try:
-                        df_t = df_all[ticker].copy()
+                        # Probeer direct, dan genormaliseerd
+                        if ticker in available_keys:
+                            key = ticker
+                        else:
+                            key = norm_to_avail.get(_norm(ticker))
+                        if key is None:
+                            continue
+                        df_t = df_all[key].copy()
+                        # Sommige yfinance versies geven hier nog een MultiIndex terug
+                        if isinstance(df_t.columns, pd.MultiIndex):
+                            df_t.columns = [c[0] for c in df_t.columns]
                         df_t = df_t.dropna(subset=['Close'])
                         if len(df_t) >= DATA_MIN_ROWS_SCAN:
                             result[ticker] = df_t
                     except Exception:
                         continue
             elif len(pool) == 1:
-                df_t = df_all.dropna(subset=['Close'])
+                df_t = df_all.copy()
+                if isinstance(df_t.columns, pd.MultiIndex):
+                    df_t.columns = [c[0] for c in df_t.columns]
+                df_t = df_t.dropna(subset=['Close'])
                 if len(df_t) >= DATA_MIN_ROWS_SCAN:
                     result[pool[0]] = df_t
     except Exception:
@@ -1927,7 +1960,12 @@ def run_scanner(strategy: str, pool: list, max_results: int = 9999) -> pd.DataFr
     FALLBACK_CAP = 100
     for ticker in missing[:FALLBACK_CAP]:
         try:
+            # Probeer eerst .history() (ondersteunt prepost), dan yf.download() als fallback
             df_t = yf.Ticker(ticker).history(period=DATA_SCAN_PERIOD, interval="1d")
+            if df_t is None or df_t.empty:
+                # Tweede kans via yf.download (werkt soms beter voor Europese tickers)
+                df_t = yf.download(ticker, period=DATA_SCAN_PERIOD, interval="1d",
+                                   progress=False, auto_adjust=True)
             if df_t is None or df_t.empty:
                 continue
             if isinstance(df_t.columns, pd.MultiIndex):
@@ -2138,7 +2176,6 @@ def run_scanner(strategy: str, pool: list, max_results: int = 9999) -> pd.DataFr
                         continue    # Geen data → skip
                     if float_sh >= SCAN_WT_FLOAT_MAX:
                         continue    # Te grote float
-                    market_cap = t_info.get('marketCap', 0) or 0
                 except Exception:
                     continue
 
@@ -2152,13 +2189,16 @@ def run_scanner(strategy: str, pool: list, max_results: int = 9999) -> pd.DataFr
                     'Vol Vandaag':   f"{int(vol_today_wt):,}",
                     'Label':         '🔥 MOMENTUM KANDIDAAT',
                 }
+
+            elif strategy == "event_sentiment":
+                # ── Event Sentiment Scanner ───────────────────────────────────
                 # Poort 1 — Hard volume veto (institutioneel geld verplicht)
                 vol_20d_avg = float(volume.rolling(VOL_MA_PERIOD).mean().iloc[-1])
                 vol_today   = float(volume.iloc[-1])
                 vol_spike   = round(vol_today / vol_20d_avg, 2) if vol_20d_avg > 0 else 0.0
 
                 if vol_today < (SCAN_SENT_VOL_SPIKE * vol_20d_avg):
-                    # Hard veto — geen institutioneel volume, maar loop gaat door
+                    # Hard veto — geen institutioneel volume
                     continue
 
                 # Poort 2 & 3 — nieuwsanalyse + extreme sentiment score
@@ -3197,15 +3237,10 @@ with main_tabs[1]:
 
             if st.button("▶ Start Scan", key="btn_start_scan"):
                 pool = load_ticker_pool(use_large_pool=use_large)
-                with st.status(f"⏳ Scanning {len(pool)} tickers...", expanded=True) as status_ctx:
-                    st.write("Data ophalen en analyseren — dit kan 1-3 minuten duren bij de grote pool.")
+                with st.spinner(f"⏳ Scanning {len(pool)} tickers — even geduld..."):
                     results = run_scanner(st.session_state.active_strategy, pool)
-                    status_ctx.update(
-                        label=f"✅ Scan voltooid — {len(results)} hits gevonden",
-                        state="complete"
-                    )
                 st.session_state.scanner_results = results
-                st.rerun()
+                st.success(f"✅ Scan voltooid — {len(results)} hits gevonden")
 
         with sc2:
             pool_n = st.session_state.get('total_ticker_count', '?')
