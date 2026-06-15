@@ -1487,46 +1487,55 @@ def get_large_ticker_pool() -> list:
 
     # ── LAYER 3 — altijd actief ───────────────────────────────────────────────
     EUROPE: list = [
+        # Nederland (AEX)
         'ASML.AS','AD.AS','ADYEN.AS','UNA.AS','HEIA.AS','PHIA.AS','ABN.AS',
-        'ING.AS','RAND.AS','WKL.AS','IMCD.AS','BESI.AS','OCI.AS','AKZA.AS',
-        'TKWY.AS','SAP.DE','SIE.DE','DTE.DE','VOW3.DE','BMW.DE','ADS.DE',
+        'INGA.AS','RAND.AS','WKL.AS','IMCD.AS','BESI.AS','AKZA.AS',
+        # Duitsland (DAX) — EON.DE → EOAN.DE (correct yfinance symbool)
+        'SAP.DE','SIE.DE','DTE.DE','VOW3.DE','BMW.DE','ADS.DE',
         'MUV2.DE','ALV.DE','BAS.DE','BAYN.DE','DBK.DE','HEN3.DE','LIN.DE',
-        'MRK.DE','RWE.DE','EON.DE','FRE.DE','ZAL.DE','IFX.DE','PAH3.DE',
+        'MRK.DE','RWE.DE','EOAN.DE','FRE.DE','ZAL.DE','IFX.DE','PAH3.DE',
+        'RHM.DE',
+        # Frankrijk (CAC 40)
         'OR.PA','MC.PA','TTE.PA','SAN.PA','BNP.PA','ACA.PA','SGO.PA',
         'KER.PA','RMS.PA','DSY.PA','AIR.PA','DG.PA','ORA.PA','VIE.PA',
-        'NESN.SW','ROG.SW','NOVN.SW','UBSG.SW','ABBN.SW','ZURN.SW',
+        # Zwitserland — ROG.SW verwijderd (via Roche delisting op yfinance)
+        'NESN.SW','NOVN.SW','UBSG.SW','ABBN.SW','ZURN.SW',
+        # VK (FTSE 100)
         'AZN.L','SHEL.L','HSBA.L','BP.L','GSK.L','RIO.L','ULVR.L',
-        'LLOY.L','BATS.L','REL.L','DGE.L','EXPN.L','LSEG.L','CPG.L',
-        'NOVO-B.CO','ERICB.ST','VOLV-B.ST','SAND.ST','ATCO-A.ST','SEB-A.ST',
-        'RACE.MI','ENI.MI','ENEL.MI','ISP.MI','UCG.MI','STM.MI','PRY.MI',
+        'LLOY.L','BATS.L','REL.L','DGE.L','EXPN.L','LSEG.L',
+        # Scandinavië — ERICB.ST → ERIC-B.ST (correct yfinance suffix)
+        'NOVO-B.CO','ERIC-B.ST','VOLV-B.ST','SAND.ST','ATCO-A.ST','SEB-A.ST',
+        # Italië — STM.MI verwijderd (gebruik STM op NYSE ipv Milaan-notering)
+        'RACE.MI','ENI.MI','ENEL.MI','ISP.MI','UCG.MI','PRY.MI',
+        # Spanje (IBEX 35)
         'TEF.MC','IBE.MC','ITX.MC','BBVA.MC','SAN.MC','REP.MC']
 
     EXTRAS: list = [
         'NVDA','MSFT','AAPL','GOOGL','GOOG','AMZN','META','TSLA','AMD','ARM',
         'INTC','QCOM','TXN','AVGO','MU','MRVL','AMAT','KLAC','LRCX','ASML',
-        'MCHP','ADI','NXPI','ON','SWKS','QRVO','MPWR','ENPH','FSLR','SEDG',
+        'MCHP','ADI','NXPI','ON','SWKS','MPWR','ENPH','FSLR','SEDG',
         'JPM','BAC','GS','MS','WFC','C','BLK','AXP','V','MA','PYPL','COF',
         'USB','PNC','TFC','SCHW','ICE','CME','SPGI','MCO','FIS','FISV','GPN',
         'JNJ','ABBV','PFE','MRK','BMY','UNH','CVS','AMGN','GILD','REGN',
         'LLY','TMO','DHR','ISRG','SYK','BSX','MDT','ABT','ZTS','VRTX',
-        'BIIB','MRNA','BNTX','INCY','ALNY','SGEN','BEAM','NTLA',
-        'XOM','CVX','COP','SLB','EOG','PXD','HAL','MPC','PSX','VLO',
-        'OXY','DVN','APA','FANG','BKR','NOV','WHD',
+        'BIIB','MRNA','BNTX','INCY','ALNY','BEAM','NTLA',
+        'XOM','CVX','COP','SLB','EOG','HAL','MPC','PSX','VLO',
+        'OXY','DVN','APA','FANG','BKR',
         'GLD','SLV','USO','FCX','NEM','GOLD','WPM','CAT','DE','EMR',
-        'NUE','STLD','CLF','AA','CENX','MP','ALB','SQM','LTHM','LAC',
+        'NUE','STLD','CLF','AA','MP','ALB','SQM','LAC',
         'WMT','COST','TGT','HD','LOW','MCD','SBUX','NKE','KO','PEP',
-        'PG','CL','KMB','GIS','K','MDLZ','PM','MO','WM','RSG',
-        'SYY','CAG','CPB','HSY','MKC','CHD','CLX','EL','DIS','NFLX','CMCSA','T','VZ','TMUS','CHTR','PARA','WBD','FOX',
+        'PG','CL','KMB','GIS','MDLZ','PM','MO','WM','RSG',
+        'SYY','CAG','CPB','HSY','MKC','CHD','CLX','EL','DIS','NFLX','CMCSA','T','VZ','TMUS','CHTR','WBD','FOX',
         'TTWO','EA','RBLX','U',
         'O','PLD','SPG','WELL','AMT','CCI','EQIX','DLR','PSA','EXR',
         'AVB','EQR','ESS','UDR','MAA','CPT','NNN','VICI','GLPI',
         'ADP','PAYX','INTU','ORCL','CRM','NOW','SNOW','DDOG','CRWD',
-        'ZS','OKTA','PANW','FTNT','NET','MDB','ESTC','GTLB',
+        'ZS','OKTA','PANW','FTNT','NET','MDB','GTLB',
         'SHOP','HUBS','BILL','PCTY','PAYC','WEX','FOUR',
         'GE','HON','MMM','ITW','ETN','PH','ROK','AME','FTV','GNRC',
-        'UPS','FDX','DAL','UAL','AAL','LUV','JBLU','ALK',
+        'UPS','FDX','DAL','UAL','AAL','LUV','ALK',
         'NSC','CSX','UNP','CP','CNI','WAB','TT','CARR','OTIS',
-        'EXAS','NTRA','PACB','ILMN','BIO','TECH','IDXX','PODD','DXCM',
+        'NTRA','PACB','ILMN','BIO','TECH','IDXX','PODD','DXCM',
         'BKNG','ABNB','LYFT','UBER','DASH','MTN',
         'GM','F','RIVN','LCID','NIO','LI','XPEV',
         'COIN','MSTR','RIOT','MARA','HUT','CLSK',
@@ -1534,7 +1543,6 @@ def get_large_ticker_pool() -> list:
         'XLP','XLU','XLB','XLRE','XLC','GDX','GDXJ',
         'TLT','HYG','LQD','EMB','VNQ','ARKK','ARKG','ARKF']
 
-    # ── LAYER 2 — hardcoded S&P 500 fallback ──────────────────────────────────
     SP500_HARDCODED: list = [
         'A','AAL','AAP','AAPL','ABBV','ABT','ACN','ADBE',
         'ADI','ADM','ADP','ADSK','AEE','AEP','AES','AFL','AIG','AIZ',
@@ -1554,14 +1562,14 @@ def get_large_ticker_pool() -> list:
         'EFX','EIX','EL','EMN','EMR','ENPH','EOG','EPAM','EQIX','EQR',
         'EQT','ES','ESS','ETN','ETR','ETSY','EVRG','EW','EXC','EXPD',
         'EXPE','EXR','F','FANG','FAST','FCX','FDS','FDX','FE','FFIV',
-        'FIS','FISV','FITB','FLT','FMC','FOX','FOXA','FRT','FSLR',
+        'FIS','FISV','FITB','FMC','FOX','FOXA','FRT','FSLR',
         'FTNT','FTV','GD','GE','GILD','GIS','GL','GLW','GM','GNRC',
         'GOOG','GOOGL','GPC','GPN','GRMN','GS','GWW','HAL','HAS','HBAN',
-        'HCA','HD','HIG','HII','HLT','HOLX','HON','HPE','HPQ',
+        'HCA','HD','HIG','HII','HLT','HON','HPE','HPQ',
         'HRL','HSIC','HST','HSY','HUM','HWM','IBM','ICE','IDXX','IEX',
         'IFF','ILMN','INCY','INTC','INTU','INVH','IP','IPG','IQV','IR',
         'IRM','ISRG','IT','ITW','IVZ','J','JBHT','JCI','JKHY','JNJ',
-        'JNPR','JPM','K','KEY','KEYS','KHC','KIM','KLAC','KMB','KMI',
+        'JPM','KEY','KEYS','KHC','KIM','KLAC','KMB','KMI',
         'KMX','KO','KR','L','LDOS','LEN','LH','LHX','LIN','LKQ','LLY',
         'LMT','LNC','LNT','LOW','LRCX','LUV','LVS','LW','LYB','LYV',
         'MA','MAA','MAR','MAS','MCD','MCHP','MCK','MCO','MDLZ','MDT',
@@ -1569,20 +1577,20 @@ def get_large_ticker_pool() -> list:
         'MSFT','MSI','MTB','MTCH','MTD','MU','NCLH','NDAQ','NEM','NEE',
         'NI','NKE','NOC','NOW','NRG','NSC','NTAP','NTRS','NUE','NVDA',
         'NVR','NWL','NWS','NWSA','NXPI','O','OGN','OMC','ON',
-        'ORCL','ORLY','OXY','PARA','PAYC','PAYX','PCAR','PCG','PEAK',
-        'PEG','PEP','PFE','PFG','PG','PGR','PH','PHM','PKG','PKI',
+        'ORCL','ORLY','OXY','PAYC','PAYX','PCAR','PCG',
+        'PEG','PEP','PFE','PFG','PG','PGR','PH','PHM','PKG',
         'PLD','PM','PNC','PNR','PNW','POOL','PPG','PPL','PRU','PSA',
-        'PSX','PTC','PWR','PXD','PYPL','QCOM','QRVO','RCL','RE','REG',
+        'PSX','PTC','PWR','PYPL','QCOM','RCL','EG','REG',
         'REGN','RF','RHI','RJF','RL','RMD','ROK','ROL','ROP','ROST',
-        'RSG','RTX','SBAC','SBUX','SCHW','SEE','SHW','SJM','SLB',
+        'RSG','RTX','SBAC','SBUX','SCHW','SHW','SJM','SLB',
         'SNA','SNPS','SO','SPG','SPGI','SRE','STE','STT','STX','STZ',
         'SWK','SWKS','SYF','SYK','SYY','T','TAP','TDG','TDY','TECH',
         'TEL','TER','TFC','TFX','TGT','TJX','TMO','TMUS','TPR','TRMB',
         'TROW','TRV','TSCO','TSLA','TSN','TT','TTWO','TXN','TXT','TYL',
         'UA','UAA','UAL','UDR','UHS','ULTA','UNH','UNP','UPS','URI',
         'USB','V','VFC','VICI','VLO','VMC','VNO','VRSK','VRSN','VRTX',
-        'VZ','WAB','WAT','WBA','WBD','WEC','WELL','WFC','WHR','WM',
-        'WMB','WMT','WRB','WRK','WST','WTW','WY','WYNN','XEL','XOM',
+        'VZ','WAB','WAT','WBD','WEC','WELL','WFC','WHR','WM',
+        'WMB','WMT','WST','WTW','WY','WYNN','XEL','XOM',
         'XRAY','XYL','YUM','ZBH','ZBRA','ZION','ZTS']
 
     # ── LAYER 2 — hardcoded MidCap 400 fallback (~400 tickers) ──────────────
@@ -1599,47 +1607,47 @@ def get_large_ticker_pool() -> list:
         # D-G
         'DAN','DFIN','DLX','DOCS','DRH','DY',
         'EAT','EFC','EGP','EHC','EME','ENVA','EPC','ESE','ESRT','EVH',
-        'EXP','EXPI','FAF','FARO','FCN','FG','FHN','FIBK','FIX','FL',
+        'EXP','EXPI','FAF','FCN','FG','FHN','FIBK','FIX',
         'FLO','FLS','FNB','FOR','FORM','FR','FRME','FSS','FUL',
-        'GBCI','GEF','GFF','GHC','GKOS','GLDD','GMED','GPI','GPRE',
+        'GBCI','GEF','GFF','GHC','GKOS','GMED','GPI','GPRE',
         'GRBK','GRC','GTN','GTLS','GVA',
         # H-L
-        'HAE','HALO','HBI','HCC','HCI','HGV','HIBB','HLIT','HLX',
-        'HMN','HNI','HOPE','HRI','HSC','HTBK','HUBG','HWC',
+        'HAE','HALO','HCC','HCI','HGV','HLIT','HLX',
+        'HMN','HNI','HOPE','HRI','HTBK','HUBG','HWC',
         'ICLR','IDCC','IIPR','INDB','INGR','IPGP','ITT',
-        'JACK','JBL','JOE','KAI','KAMN','KAR','KBH','KBR','KFY',
+        'JACK','JBL','JOE','KAI','KBH','KBR','KFY',
         'KMT','KMPR','KN','KNX','KNSL','KSS','KTOS',
-        'LAUR','LCI','LE','LEA','LGND','LII','LIVN','LKQ',
-        'LMAT','LNTH','LPLA','LRN','LSI','LSTR','LUMN',
+        'LAUR','LE','LEA','LGND','LII','LIVN','LKQ',
+        'LMAT','LNTH','LPLA','LRN','LSTR','LUMN',
         # M-N
-        'MGEE','MHO','MIR','MKSI','MLCO','MLI','MMSI','MNRO','MODG',
-        'MP','MRC','MRCY','MTH','MTN','MUR','NATL','NBR',
-        'NEO','NGL','NHC','NHI','NJR','NNN','NSP','NUS','NVT','NYCB',
+        'MGEE','MHO','MIR','MKSI','MLCO','MLI','MMSI','MNRO',
+        'MP','MRCY','MTH','MTN','MUR','NATL','NBR',
+        'NEO','NGL','NHC','NHI','NJR','NNN','NSP','NUS','NVT',
         # O-R
-        'ODP','OFG','OGE','OGS','OI','OII','OLN','OMF','ONTO','ORA',
-        'OWL','OXM','PACW','PBH','PCRX','PEB','PFSI','PJT','PLMR',
+        'OFG','OGE','OGS','OI','OII','OLN','OMF','ONTO','ORA',
+        'OWL','OXM','PBH','PCRX','PEB','PFSI','PJT','PLMR',
         'PLUS','PNM','POR','POWL','PRDO','PRG','PRIM','PRVA','PTEN',
-        'R','RBCAA','RCII','RDNT','REX','RH','RIG','RLJ','RMBS',
+        'R','RBCAA','RDNT','REX','RH','RIG','RLJ','RMBS',
         'RNR','ROCK','RPM','RRC','RRX','RUN','RXO',
         # S
         'SAH','SANM','SBCF','SBRA','SCI','SEIC','SF','SFBS','SIGI',
-        'SITC','SITE','SJW','SKT','SLM','SM','SMTC','SNV','SPTN',
-        'STE','STEP','SUM','SWN','SXT','SYBT','SXI',
+        'SITC','SITE','SKT','SLM','SM','SMTC','SNV',
+        'STE','STEP','SWN','SXT','SYBT','SXI',
         # T-Z
         'TCBK','TCBI','TEX','TGI','TILE','TISI','TNET','TPH','TREX',
-        'TRNO','TRN','TRMK','TTC','TWI','UBSI','UCBI','UGI','UNF',
-        'UNVR','UVV','VBTX','VG','VIRT','VLY','VRTS','VSCO','VSH',
-        'WABC','WAFD','WD','WEN','WERN','WFRD','WHD','WK','WLK',
+        'TRNO','TRN','TRMK','TTC','TWI','UBSI','UGI','UNF',
+        'UVV','VBTX','VG','VIRT','VLY','VRTS','VSCO','VSH',
+        'WABC','WAFD','WD','WEN','WERN','WFRD','WK','WLK',
         'WMS','WOR','WRLD','WSM','WSO','WTS','WWD','WWW',
         'XPO','YELP','ZWS',
         # Extra bekende MidCap namen (gevraagd in bugfix)
-        'DECK','TOLL','FLEX','RE','ANET','SITE','TREX','MEDP',
+        'DECK','TOLL','FLEX','EG','ANET','SITE','TREX','MEDP',
         'HTGC','LADR','SMCI','BILL','CELH','HIMS','DUOL','GLBE',
-        'EXEL','ITCI','PRCT','QLYS','HALO','CRVL','IIPR','UFPT',
+        'EXEL','PRCT','QLYS','HALO','CRVL','IIPR','UFPT',
         'PRGS','FCFS','MGNI','GKOS','IRDM','LCII','SAIA','EXPO',
         'MGEE','HWKN','POWI','IPAR','MSEX','SPSC','CSGS','NVCR',
-        'AEIS','ICFI','HURN','NTCT','PSMT','EPAC','VRRM','ACLS','FORM','PTGX','TMDX','PCVX','RXST','FTDR','XPEL','UFPT','DXPE','AVNS','LKFN','SKYW','PRAA',
-        'AMSF','HSTM','PFIS','RCUS','CCOI','SANA','NKTR','INVA']
+        'AEIS','ICFI','HURN','NTCT','PSMT','EPAC','VRRM','ACLS','FORM','TMDX','PCVX','XPEL','DXPE','AVNS','LKFN','SKYW','PRAA',
+        'AMSF','HSTM','PFIS','RCUS','CCOI','NKTR']
 
     # ── LAYER 1: Probeer Wikipedia live te scrapen ────────────────────────────
     scraped_sp500:  list = []
@@ -1957,9 +1965,12 @@ def run_scanner(strategy: str, pool: list, max_results: int = 9999) -> pd.DataFr
     # ── FALLBACK — kleine restgroep individueel ophalen (cap om timeouts te
     #    voorkomen als de bulk-call grotendeels faalde) ─────────────────────
     missing = [t for t in pool if t not in bulk_cache]
-    FALLBACK_CAP = 100
-    for ticker in missing[:FALLBACK_CAP]:
+    FALLBACK_CAP = 50   # verlaagd van 100 → 50 om Yahoo rate-limit (429) te voorkomen
+    for i, ticker in enumerate(missing[:FALLBACK_CAP]):
         try:
+            # Kleine vertraging elke 10 calls om 429 te voorkomen
+            if i > 0 and i % 10 == 0:
+                time.sleep(1.0)
             # Probeer eerst .history() (ondersteunt prepost), dan yf.download() als fallback
             df_t = yf.Ticker(ticker).history(period=DATA_SCAN_PERIOD, interval="1d")
             if df_t is None or df_t.empty:
@@ -3743,7 +3754,7 @@ with main_tabs[2]:
                 fixedrange=False,
             )})
 
-        st.plotly_chart(fig, use_container_width=True, config={
+        st.plotly_chart(fig, width='stretch', config={
             'scrollZoom':           True,       # Scrollwiel = zoom (zoals TradingView)
             'displayModeBar':       True,
             'modeBarButtonsToRemove': ['toImage', 'lasso2d', 'select2d'],
