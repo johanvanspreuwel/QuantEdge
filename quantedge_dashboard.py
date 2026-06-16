@@ -108,12 +108,12 @@ CANDLE_STAR_CLOSE_MAX   = 0.35  # Sluiting ≤ 35% van range-bodem = Shooting St
 CACHE_PRICE_TTL       = 300   # Seconden cache koersdata (5 min)
 CACHE_POOL_TTL        = 3600  # Seconden cache tickerpool (1 uur)
 DATA_MAIN_PERIOD      = "3mo" # Periode hoofdtabel
-DATA_SCAN_PERIOD      = "3mo" # Periode scanner (3mo = sneller, minder timeouts)
+DATA_SCAN_PERIOD      = "6mo" # Periode scanner (terug naar 6mo — geen bulk-download meer)
 DATA_WL_PERIOD        = "1mo" # Periode watchlist
 DATA_MTF_WEEKLY       = "1y"  # Periode wekelijkse MTF check
 DATA_MTF_HOURLY       = "5d"  # Periode uurlijkse MTF check
 DATA_MIN_ROWS_MAIN    = 30    # Min rijen voor hoofdtabel
-DATA_MIN_ROWS_SCAN    = 30    # Min rijen voor scanner (verlaagd voor snelheid)
+DATA_MIN_ROWS_SCAN    = 50    # Min rijen voor scanner (oude, robuustere waarde)
 DATA_MIN_ROWS_FETCH   = 5     # Min rijen voor geldige datafetch
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1880,125 +1880,49 @@ def compute_multi_timeframe_check(ticker: str) -> dict:
     return result
 
 
-@st.cache_data(ttl=300, show_spinner=False)
-def _bulk_download_pool(pool: tuple) -> dict:
-    """
-    Download dagdata voor de volledige pool in 1 yf.download() call.
-    Gecached voor 5 minuten — een rerun (bv. door een websocket-reconnect
-    tijdens een lange scan, waardoor het lijkt of de scanner "stopt")
-    hergebruikt dit resultaat direct in plaats van opnieuw 1000+ tickers
-    te downloaden.
-
-    FIX: yfinance normaliseert ticker-keys in MultiIndex soms anders dan
-    de originele ticker-string (bijv. 'ASML.AS' → 'ASML' of omgekeerd).
-    We bouwen een lookup-map van genormaliseerde key → originele ticker
-    zodat Europese en andere speciale tickers altijd gevonden worden.
-    """
-    result = {}
-    try:
-        ticker_str = " ".join(pool)
-        df_all = yf.download(
-            ticker_str,
-            period=DATA_SCAN_PERIOD,
-            interval="1d",
-            progress=False,
-            auto_adjust=True,
-            group_by="ticker",
-            threads=True,
-        )
-        if df_all is not None and not df_all.empty:
-            if isinstance(df_all.columns, pd.MultiIndex):
-                # Haal de top-level tickerkeys op uit de MultiIndex
-                available_keys = list(df_all.columns.get_level_values(0).unique())
-                # Normaliseer beide kanten (upper + punt→koppelteken) voor matching
-                def _norm(t: str) -> str:
-                    return str(t).upper().replace('-', '.').replace(' ', '')
-                norm_to_avail = {_norm(k): k for k in available_keys}
-
-                for ticker in pool:
-                    try:
-                        # Probeer direct, dan genormaliseerd
-                        if ticker in available_keys:
-                            key = ticker
-                        else:
-                            key = norm_to_avail.get(_norm(ticker))
-                        if key is None:
-                            continue
-                        df_t = df_all[key].copy()
-                        # Sommige yfinance versies geven hier nog een MultiIndex terug
-                        if isinstance(df_t.columns, pd.MultiIndex):
-                            df_t.columns = [c[0] for c in df_t.columns]
-                        df_t = df_t.dropna(subset=['Close'])
-                        if len(df_t) >= DATA_MIN_ROWS_SCAN:
-                            result[ticker] = df_t
-                    except Exception:
-                        continue
-            elif len(pool) == 1:
-                df_t = df_all.copy()
-                if isinstance(df_t.columns, pd.MultiIndex):
-                    df_t.columns = [c[0] for c in df_t.columns]
-                df_t = df_t.dropna(subset=['Close'])
-                if len(df_t) >= DATA_MIN_ROWS_SCAN:
-                    result[pool[0]] = df_t
-    except Exception:
-        pass
-    return result
-
-
 def run_scanner(strategy: str, pool: list, max_results: int = 9999) -> pd.DataFrame:
     """
     Scan de tickerpool op basis van de geselecteerde strategie.
-    Geen UI-updates tijdens de scan — alleen eindresultaat tonen.
+
+    TERUGGEZET naar het oudere, bewezen patroon: per ticker individueel
+    ophalen via fetch_ticker_data() (zelf al @st.cache_data-gecached),
+    met een live progress bar. Dit voorkomt:
+      - MultiIndex key-mismatches bij bulk-download (bv. ASML.AS)
+      - Yahoo rate-limits (429) door 1 megacall met 1000+ tickers
+      - Een "hangende" UI zonder enig voortgangssignaal tijdens de scan
     """
+    print(f"DEBUG: Totaal aantal tickers aangeboden aan loop: {len(pool)}")
+
     rows        = []
     failed      = []
     errored     = []
     total       = len(pool)
 
-    # ── BULK DOWNLOAD (gecached) — alle tickers in 1 yf.download() call ──────
-    # @st.cache_data zorgt dat een herstart van het script (bv. door een
-    # websocket-reconnect die de UI laat lijken alsof de scan "stopt") niet
-    # opnieuw 1037 tickers downloadt — binnen 5 minuten komt het resultaat
-    # direct uit cache en is de scan vrijwel instant.
-    bulk_cache = _bulk_download_pool(tuple(pool))
-
-    # ── FALLBACK — kleine restgroep individueel ophalen (cap om timeouts te
-    #    voorkomen als de bulk-call grotendeels faalde) ─────────────────────
-    missing = [t for t in pool if t not in bulk_cache]
-    FALLBACK_CAP = 50   # verlaagd van 100 → 50 om Yahoo rate-limit (429) te voorkomen
-    for i, ticker in enumerate(missing[:FALLBACK_CAP]):
-        try:
-            # Kleine vertraging elke 10 calls om 429 te voorkomen
-            if i > 0 and i % 10 == 0:
-                time.sleep(1.0)
-            # Probeer eerst .history() (ondersteunt prepost), dan yf.download() als fallback
-            df_t = yf.Ticker(ticker).history(period=DATA_SCAN_PERIOD, interval="1d")
-            if df_t is None or df_t.empty:
-                # Tweede kans via yf.download (werkt soms beter voor Europese tickers)
-                df_t = yf.download(ticker, period=DATA_SCAN_PERIOD, interval="1d",
-                                   progress=False, auto_adjust=True)
-            if df_t is None or df_t.empty:
-                continue
-            if isinstance(df_t.columns, pd.MultiIndex):
-                df_t = df_t.copy()
-                df_t.columns = [c[0] for c in df_t.columns]
-            df_t = df_t.dropna(subset=['Close'])
-            if len(df_t) >= DATA_MIN_ROWS_SCAN:
-                bulk_cache[ticker] = df_t
-        except Exception:
-            continue
-
-
-    print(f"DEBUG: Scan gestart. Strategie={strategy} | Pool={total} tickers | "
-          f"Data beschikbaar voor {len(bulk_cache)} tickers")
+    # ── Voortgangsbalk — altijd gebaseerd op de volledige pool ────────────────
+    progress_bar = st.progress(0.0, text=f"⏳ Initialiseren scan van {total} tickers...")
+    status_box   = st.empty()
 
     for idx, ticker in enumerate(pool):
-        if idx % 100 == 0:
-            print(f"DEBUG: Voortgang {idx}/{total} | Hits tot nu toe={len(rows)}")
+
+        pct = (idx + 1) / total
+        if idx % 10 == 0 or idx == total - 1:
+            progress_bar.progress(
+                min(pct, 1.0),
+                text=f"⏳ Scanning {idx + 1}/{total} · {len(rows)} hits · {len(failed)} geen data · {len(errored)} fouten"
+            )
+            status_box.markdown(
+                f"<small style='color:#848E9C; font-family:monospace;'>"
+                f"Huidig: <b style='color:#F0B90B;'>{ticker}</b> &nbsp;|&nbsp; "
+                f"Hits: <b style='color:#00C853;'>{len(rows)}</b> &nbsp;|&nbsp; "
+                f"Geen data: {len(failed)} &nbsp;|&nbsp; Fouten: {len(errored)}"
+                f"</small>",
+                unsafe_allow_html=True,
+            )
+
         try:
-            # ── Data uit cache ──────────────────────────────────────────────
-            df = bulk_cache.get(ticker)
-            if df is None:
+            # ── Data ophalen via gecachte functie (per ticker, niet bulk) ─────
+            df, info = fetch_ticker_data(ticker, period=DATA_SCAN_PERIOD)
+            if df is None or len(df) < DATA_MIN_ROWS_SCAN:
                 failed.append(ticker)
                 continue
 
@@ -2328,6 +2252,9 @@ def run_scanner(strategy: str, pool: list, max_results: int = 9999) -> pd.DataFr
             continue  # Loop gaat altijd door, ook bij onverwachte fouten
 
     # ── Loop klaar — opruimen UI ──────────────────────────────────────────────
+    progress_bar.progress(1.0, text=f"✅ Scan voltooid: {total} tickers · {len(rows)} hits · {len(failed)} geen data · {len(errored)} fouten")
+    status_box.empty()
+
     print(f"DEBUG: Scan klaar. Pool={total} | Hits={len(rows)} | Geen data={len(failed)} | Fouten={len(errored)}")
 
     if failed:
@@ -3248,10 +3175,9 @@ with main_tabs[1]:
 
             if st.button("▶ Start Scan", key="btn_start_scan"):
                 pool = load_ticker_pool(use_large_pool=use_large)
-                with st.spinner(f"⏳ Scanning {len(pool)} tickers — even geduld..."):
-                    results = run_scanner(st.session_state.active_strategy, pool)
+                st.info(f"🔍 Scan gestart: **{len(pool)} tickers** worden doorlopen...")
+                results = run_scanner(st.session_state.active_strategy, pool)
                 st.session_state.scanner_results = results
-                st.success(f"✅ Scan voltooid — {len(results)} hits gevonden")
 
         with sc2:
             pool_n = st.session_state.get('total_ticker_count', '?')
