@@ -840,16 +840,24 @@ def fetch_live_price(ticker: str) -> dict:
 
 
 @st.cache_data(ttl=CACHE_PRICE_TTL)
-def fetch_ticker_data_fast(ticker: str) -> pd.DataFrame | None:
+def fetch_ticker_data_fast(ticker: str, period: str = "6mo") -> pd.DataFrame | None:
     """
-    Snelle data-fetch voor losse ticker — fallback als bulk niet werkt.
+    Snelle data-fetch ZONDER t.info — gebruikt door de Scanner, die alleen
+    OHLCV-data nodig heeft en geen bedrijfsmetadata (currency, sector, etc.).
+    t.info is de traagste en meest rate-limit-gevoelige yfinance-call;
+    die overslaan scheelt bij 1000+ tickers een aanzienlijke hoeveelheid tijd
+    en verkleint de kans op een Yahoo 429 (Too Many Requests) flink.
     """
     try:
-        df = yf.download(ticker, period="3mo", interval="1d",
-                         progress=False, auto_adjust=True)
+        df = yf.Ticker(ticker).history(period=period)
+        if df is None or df.empty or len(df) < DATA_MIN_ROWS_SCAN:
+            # Fallback voor Europese/exotische tickers waarbij .history() leeg is
+            df = yf.download(ticker, period=period, interval="1d",
+                             progress=False, auto_adjust=True)
         if df is None or df.empty or len(df) < DATA_MIN_ROWS_SCAN:
             return None
         if isinstance(df.columns, pd.MultiIndex):
+            df = df.copy()
             df.columns = [c[0] for c in df.columns]
         required = {'Open','High','Low','Close','Volume'}
         if not required.issubset(set(df.columns)):
@@ -1920,8 +1928,11 @@ def run_scanner(strategy: str, pool: list, max_results: int = 9999) -> pd.DataFr
             )
 
         try:
-            # ── Data ophalen via gecachte functie (per ticker, niet bulk) ─────
-            df, info = fetch_ticker_data(ticker, period=DATA_SCAN_PERIOD)
+            # ── Data ophalen via lichte, gecachte functie (geen .info!) ───────
+            # De scanner-strategieën gebruiken alleen OHLCV — t.info (bedrijfs-
+            # metadata) overslaan voorkomt onnodige, trage en rate-limit-
+            # gevoelige calls over 1000+ tickers.
+            df = fetch_ticker_data_fast(ticker, period=DATA_SCAN_PERIOD)
             if df is None or len(df) < DATA_MIN_ROWS_SCAN:
                 failed.append(ticker)
                 continue
@@ -3174,10 +3185,12 @@ with main_tabs[1]:
             )
 
             if st.button("▶ Start Scan", key="btn_start_scan"):
+                st.session_state['scan_running'] = True
                 pool = load_ticker_pool(use_large_pool=use_large)
                 st.info(f"🔍 Scan gestart: **{len(pool)} tickers** worden doorlopen...")
                 results = run_scanner(st.session_state.active_strategy, pool)
                 st.session_state.scanner_results = results
+                st.session_state['scan_running'] = False
 
         with sc2:
             pool_n = st.session_state.get('total_ticker_count', '?')
@@ -3304,12 +3317,35 @@ with main_tabs[3]:
         )
     with ctrl2:
         st.markdown("<br>", unsafe_allow_html=True)
-        monitor_active = st.toggle("▶ Auto-refresh AAN", value=True, key="lm_active")
+        # BUGFIX: default was True — dit herstart het VOLLEDIGE Streamlit-script
+        # elke {refresh_interval} seconden, ook als een Scanner-scan nog loopt.
+        # Een lopende run_scanner()-loop wordt daardoor halverwege weggegooid
+        # zonder foutmelding — dit was de hoofdoorzaak van "de scan stopt abrupt".
+        monitor_active = st.toggle("▶ Auto-refresh AAN", value=False, key="lm_active",
+                                    help="⚠ Zet dit UIT voordat je een Scanner-scan start! "
+                                         "Auto-refresh herstart de volledige app, wat een "
+                                         "lopende scan halverwege afbreekt.")
     with ctrl3:
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("🔄 Nu vernieuwen", key="btn_lm_manual_refresh"):
             st.cache_data.clear()
             st.rerun()
+
+    if monitor_active:
+        st.warning(
+            "⚠ Auto-refresh staat AAN. Zolang dit actief is, herstart de hele app "
+            "elke paar seconden — start GEEN scan in de Scanner-tab terwijl dit aan staat, "
+            "want de scan wordt dan halverwege afgebroken.",
+            icon="⚠️"
+        )
+
+    # ── Harde beveiliging: blokkeer autorefresh als een scan loopt ───────────
+    # run_scanner() draait synchroon binnen één script-uitvoering, maar deze
+    # vlag voorkomt ook randgevallen (bv. snelle tab-wissel tijdens caching).
+    _scan_in_progress = st.session_state.get('scan_running', False)
+    if _scan_in_progress:
+        monitor_active = False
+        st.error("⛔ Auto-refresh tijdelijk geblokkeerd: er loopt momenteel een scan in de Scanner-tab.")
 
     # Auto-refresh via streamlit-autorefresh indien beschikbaar
     if autorefresh_available and monitor_active:
