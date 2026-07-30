@@ -95,6 +95,12 @@ SCAN_WT_CHANGE_MIN    = 10.0  # Min dagelijkse stijging % (10%)
 SCAN_WT_RVOL_MIN      = 5.0   # Min Relative Volume vs 20D gemiddelde (5×)
 SCAN_WT_FLOAT_MAX     = 10_000_000   # Max float (10 miljoen vrij verhandelbare aandelen)
 
+# ── BB Momentum Scanner ────────────────────────────────────────────────────────
+SCAN_BB_PERIOD        = 20    # SMA-periode voor Bollinger Bands
+SCAN_BB_STD           = 2.0   # Standaarddeviatie Bollinger Bands
+SCAN_BB_MIN_DAYS      = 2     # Aantal aaneengesloten dagen 'positief' (instelbaar in UI)
+SCAN_BB_UB_TOLERANCE  = 0.005 # Optie B: sluit binnen 0.5% van Upper Band = telt mee als 'aan de band'
+
 # ── Candlestick patroon verhoudingen ──────────────────────────────────────────
 CANDLE_DOJI_MAX_BODY    = 0.05  # Lichaam ≤ 5% van totale range = Doji
 CANDLE_HAMMER_SHADOW    = 2     # Onderste schaduw ≥ 2× lichaam = Hammer
@@ -442,6 +448,9 @@ if 'scanner_results' not in st.session_state:
 
 if 'active_strategy' not in st.session_state:
     st.session_state.active_strategy = None
+
+if 'bb_min_days' not in st.session_state:
+    st.session_state['bb_min_days'] = SCAN_BB_MIN_DAYS  # Default: 2 aaneengesloten dagen
 
 if 'scan_pool_size' not in st.session_state:
     st.session_state['scan_pool_size'] = 0
@@ -2188,6 +2197,83 @@ def run_scanner(strategy: str, pool: list, max_results: int = 9999) -> pd.DataFr
                 except Exception:
                     pass  # Geen nieuws → match blijft False, loop gaat door
 
+            elif strategy == "bb_momentum":
+                # ── BB Momentum Scanner ───────────────────────────────────────
+                #
+                # Zoekt aandelen die al 'min_days' aaneengesloten handelsdagen
+                # aan de POSITIEVE kant van de Bollinger Bands sluiten.
+                #
+                # OPTIE A — BB MOMENTUM: slotkoers boven de 20-daagse SMA
+                #   (middellijn) voor N achtereenvolgende dagen.
+                #
+                # OPTIE B — UPPER BAND WALK: slotkoers boven (of binnen 0.5%
+                #   van) de Upper Band voor N achtereenvolgende dagen.
+                #   Dit signaleert een echte "band-walk" — zeldzaam en sterk
+                #   bullish momentum.
+                #
+                # min_days wordt per scan ingesteld via de UI-slider en
+                # doorgegeven als extra kwarg via st.session_state.
+
+                # Haal instelbare parameter op (default = SCAN_BB_MIN_DAYS)
+                min_days = st.session_state.get('bb_min_days', SCAN_BB_MIN_DAYS)
+
+                # ── Bereken BB voor de gevraagde periode ─────────────────────
+                if n < SCAN_BB_PERIOD + min_days:
+                    continue  # Niet genoeg data voor betrouwbare BB
+
+                sma   = close.rolling(SCAN_BB_PERIOD).mean()
+                std   = close.rolling(SCAN_BB_PERIOD).std()
+                upper = sma + SCAN_BB_STD * std
+                # Pak de laatste min_days + 1 waarden (meest recent = index [-1])
+                # We checken indices [-1] t/m [-min_days]: dag 0 t/m dag N-1
+                close_window = [float(close.iloc[-(i+1)]) for i in range(min_days)]
+                sma_window   = [float(sma.iloc[-(i+1)])   for i in range(min_days)]
+                upper_window = [float(upper.iloc[-(i+1)]) for i in range(min_days)]
+
+                if any(np.isnan(v) for row in [close_window, sma_window, upper_window] for v in row):
+                    continue  # NaN in BB → niet genoeg data
+
+                # ── Optie A: alle days boven SMA (middellijn) ────────────────
+                optie_a = all(c > m for c, m in zip(close_window, sma_window))
+
+                # ── Optie B: alle days aan/boven Upper Band (binnen tolerance)
+                # "Binnen 0.5%" = sluit op minder dan 0.5% ONDER de upper band
+                # of erboven → telt mee als "aan de band"
+                optie_b = all(
+                    c >= ub * (1 - SCAN_BB_UB_TOLERANCE)
+                    for c, ub in zip(close_window, upper_window)
+                )
+
+                if not (optie_a or optie_b):
+                    continue
+
+                # ── Bereken nuttige outputwaarden ─────────────────────────────
+                cur_close = close_window[0]   # Vandaag
+                cur_upper = upper_window[0]
+                cur_sma   = sma_window[0]
+
+                # Afstand (%) van slotkoers t.o.v. Upper Band
+                dist_to_upper = round((cur_close - cur_upper) / cur_upper * 100, 2)
+                # Afstand (%) t.o.v. SMA (middellijn)
+                dist_to_sma   = round((cur_close - cur_sma) / cur_sma * 100, 2)
+
+                # Bepaal het signaaltype
+                if optie_b:
+                    signaal = f"🚀 UPPER BAND WALK ({min_days}D+)"
+                else:
+                    signaal = f"📈 BB MOMENTUM ({min_days}D+)"
+
+                match = True
+                extra_info = {
+                    'Signaal':           signaal,
+                    'Afstand UB %':      f"{dist_to_upper:+.2f}%",
+                    'Afstand SMA %':     f"{dist_to_sma:+.2f}%",
+                    'Upper Band':        f"{cur_upper:.2f}",
+                    'SMA 20':            f"{cur_sma:.2f}",
+                    'Optie A (>SMA)':   '✅' if optie_a else '—',
+                    'Optie B (UB Walk)': '✅' if optie_b else '—',
+                }
+
             # ── Match gevonden → R:R berekening (geen zware MTF call) ──────────
             if match:
                 # R:R berekening puur op dagdata (al gecached)
@@ -3138,13 +3224,17 @@ with main_tabs[1]:
             "🔥 Low Float Momentum",
             f"Warrior Trading: koers ${SCAN_WT_PRICE_MIN}-${SCAN_WT_PRICE_MAX} · dagstijging ≥{SCAN_WT_CHANGE_MIN}% · RVOL ≥{SCAN_WT_RVOL_MIN}× · float <{SCAN_WT_FLOAT_MAX//1_000_000}M"
         ),
+        "bb_momentum": (
+            "📊 BB Momentum",
+            f"BB({SCAN_BB_PERIOD},{SCAN_BB_STD}) · N achtereenvolgende dagen boven SMA of Upper Band · instelbare min_days parameter"
+        ),
     }
 
-    # Twee rijen: 3 + 4
-    row1_keys = list(strategy_map.keys())[:3]
-    row2_keys = list(strategy_map.keys())[3:]
+    # Twee rijen: 4 + 4
+    row1_keys = list(strategy_map.keys())[:4]
+    row2_keys = list(strategy_map.keys())[4:]
 
-    btn_row1 = st.columns(3)
+    btn_row1 = st.columns(4)
     for i, sk in enumerate(row1_keys):
         label, tooltip = strategy_map[sk]
         with btn_row1[i]:
@@ -3173,6 +3263,36 @@ with main_tabs[1]:
         else:
             strategy_label, strategy_desc = _active, ""
         st.markdown(f"**Actieve Strategie:** {strategy_label} — <span style='color:#848E9C;'>{strategy_desc}</span>", unsafe_allow_html=True)
+
+        # ── BB Momentum: instelbare min_days slider ───────────────────────────
+        if _active == "bb_momentum":
+            _col_sl, _col_exp = st.columns([1, 3])
+            with _col_sl:
+                bb_min_days_val = st.slider(
+                    "📅 Min. aaneengesloten dagen",
+                    min_value=1, max_value=10,
+                    value=st.session_state.get('bb_min_days', SCAN_BB_MIN_DAYS),
+                    step=1,
+                    key="bb_min_days_slider",
+                    help="Aantal handelsdagen dat de koers aaneengesloten boven de SMA (Optie A) "
+                         "of Upper Band (Optie B) moet sluiten om als hit te worden gemarkeerd."
+                )
+                st.session_state['bb_min_days'] = bb_min_days_val
+            with _col_exp:
+                st.markdown(
+                    f"<div style='background:#13171C;border:1px solid #2B3139;border-radius:6px;"
+                    f"padding:10px 14px;font-size:0.78rem;font-family:monospace;'>"
+                    f"<span style='color:#848E9C;'>Optie A</span> "
+                    f"<b style='color:#F0B90B;'>BB MOMENTUM</b>: slotkoers ≥ {bb_min_days_val}× boven "
+                    f"<span style='color:#2196F3;'>SMA {SCAN_BB_PERIOD}</span> (middellijn)<br>"
+                    f"<span style='color:#848E9C;'>Optie B</span> "
+                    f"<b style='color:#00C853;'>UPPER BAND WALK</b>: slotkoers ≥ {bb_min_days_val}× binnen "
+                    f"<span style='color:#00C853;'>0.5% van Upper Band</span> "
+                    f"(sterk momentum, zeldzaam signaal)"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+
         st.markdown("---")
 
         sc1, sc2 = st.columns([1, 3])
