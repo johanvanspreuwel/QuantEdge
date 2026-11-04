@@ -396,23 +396,29 @@ st.markdown("""
     .stButton > button { width: 100%; }
   }
   @media (max-width: 640px) {
-    /* Hoofdtabs als onderbalk, zoals een echte app (verneste tabs in expanders blijven normaal) */
+    /* Hoofdtabs als onderbalk, zoals een echte app (verneste tabs in expanders blijven normaal).
+       !important + div[...] (hogere specificiteit) omdat Streamlit zijn eigen stijlen later laadt. */
     .block-container { padding-bottom: calc(6.5rem + env(safe-area-inset-bottom)) !important; }
-    [data-baseweb="tab-list"] {
-      position: fixed; left: 0; right: 0; bottom: 0; z-index: 999; width: 100%;
-      background: rgba(15,18,23,.94); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
-      border-top: 1px solid var(--border); border-bottom: 0; border-radius: 0; gap: 0;
-      padding: 0 64px calc(2px + env(safe-area-inset-bottom)) 4px; justify-content: space-around;
+    div[data-baseweb="tab-list"] {
+      position: fixed !important; left: 0 !important; right: 0 !important; bottom: 0 !important; top: auto !important;
+      z-index: 99999 !important; width: 100vw !important; max-width: 100vw !important; box-sizing: border-box !important;
+      background: rgba(15,18,23,.96) !important; backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+      border-top: 1px solid var(--border) !important; border-bottom: 0 !important; border-radius: 0 !important; gap: 0 !important;
+      padding: 0 64px calc(2px + env(safe-area-inset-bottom)) 4px !important; justify-content: space-around !important; overflow: hidden !important;
     }
-    [data-baseweb="tab"] { flex: 1 1 0; min-width: 0; justify-content: center; padding: 0 2px !important; font-size: .68rem !important; min-height: 54px; }
-    [data-baseweb="tab"] p { font-size: .68rem !important; }
-    [data-baseweb="tab-highlight"] { top: 0 !important; bottom: auto !important; height: 3px !important; border-radius: 0 0 3px 3px; }
-    [data-baseweb="tab-border"] { display: none; }
-    [data-testid="stExpander"] [data-baseweb="tab-list"] {
-      position: static; background: var(--bg-secondary); backdrop-filter: none; border-top: 0;
-      border-bottom: 1px solid var(--border); padding: 0; justify-content: flex-start; overflow-x: auto; }
-    [data-testid="stExpander"] [data-baseweb="tab"] { flex: 0 0 auto; min-height: 44px; padding: 0 12px !important; }
-    [data-testid="stExpander"] [data-baseweb="tab-highlight"] { top: auto !important; bottom: 0 !important; }
+    div[data-baseweb="tab-list"] button[data-baseweb="tab"] {
+      flex: 1 1 0 !important; min-width: 0 !important; justify-content: center !important;
+      padding: 0 2px !important; min-height: 54px !important; height: 54px !important; }
+    div[data-baseweb="tab-list"] button[data-baseweb="tab"] p { font-size: .68rem !important; white-space: nowrap !important; }
+    div[data-baseweb="tab-highlight"] { top: 0 !important; bottom: auto !important; height: 3px !important; border-radius: 0 0 3px 3px !important; }
+    div[data-baseweb="tab-border"] { display: none !important; }
+    [data-testid="stExpander"] div[data-baseweb="tab-list"] {
+      position: static !important; width: auto !important; max-width: none !important; background: var(--bg-secondary) !important;
+      backdrop-filter: none; border-top: 0 !important; border-bottom: 1px solid var(--border) !important; padding: 0 !important;
+      justify-content: flex-start !important; overflow-x: auto !important; }
+    [data-testid="stExpander"] div[data-baseweb="tab-list"] button[data-baseweb="tab"] {
+      flex: 0 0 auto !important; min-height: 44px !important; height: auto !important; padding: 0 12px !important; }
+    [data-testid="stExpander"] div[data-baseweb="tab-highlight"] { top: auto !important; bottom: 0 !important; }
   }
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation: none !important; transition: none !important; }
