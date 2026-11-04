@@ -359,20 +359,20 @@ st.markdown("""
   .qe-trend .t-h { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 4px; }
   .qe-trend .t-n { font-weight: 700; font-size: 1rem; color: #F4F6F8; }
   .qe-trend .t-c { font-weight: 400; font-size: .72rem; color: var(--text-muted); margin-left: 4px; }
-  .qe-trend .t-r { display: flex; gap: 14px; font-size: .78rem; color: var(--text-muted); margin: 2px 0 6px; }
+  .qe-trend .t-r { display: flex; flex-wrap: wrap; gap: 2px 12px; font-size: .78rem; color: var(--text-muted); margin: 2px 0 6px; }
   .qe-trend .t-r b { font-family: 'JetBrains Mono', monospace; }
   .qe-trend svg { width: 100%; height: auto; max-height: 340px; display: block; }
   .qe-trend .t-lg { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: .72rem; color: var(--text-muted); margin-top: 6px; }
   .qe-trend .t-lg i { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
   .qe-trend .t-lg b { color: var(--text-primary); }
   .qe-ph { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: .7rem; font-weight: 700; color: #0B0E11; white-space: nowrap; }
-  .qe-tr-row { display: grid; grid-template-columns: 22px minmax(0,1fr) 72px 46px 46px; align-items: center; gap: 6px; padding: 7px 4px; border-top: 1px solid rgba(255,255,255,.05); font-size: .82rem; }
+  .qe-tr-row { display: grid; grid-template-columns: 22px minmax(0,1fr) 60px 54px 56px; align-items: center; gap: 6px; padding: 7px 4px; border-top: 1px solid rgba(255,255,255,.05); font-size: .82rem; }
   .qe-tr-row.hd { border-top: 0; font-size: .66rem; text-transform: uppercase; letter-spacing: .6px; color: var(--text-muted); padding-top: 2px; }
   .qe-tr-row.mem { grid-template-columns: 18px minmax(0,1fr) 44px 54px 58px; }
   .qe-tr-row.mem .n { color: var(--text-muted); font-size: .72rem; text-align: right; }
   .qe-tr-row.hd .t { color: var(--text-muted); font-weight: 400; }
   .qe-tr-row.sel { background: rgba(240,185,11,.07); border-radius: 8px; }
-  .qe-tr-row .t { color: #F4F6F8; font-weight: 600; line-height: 1.15; overflow: hidden; overflow-wrap: anywhere; }
+  .qe-tr-row .t { color: #F4F6F8; font-weight: 600; line-height: 1.15; overflow: hidden; overflow-wrap: break-word; hyphens: auto; }
   .qe-tr-row .t small { display: block; font-weight: 400; font-size: .68rem; color: var(--text-muted); }
   .qe-tr-row .v { text-align: right; font-family: 'JetBrains Mono', monospace; font-size: .76rem; }
 
@@ -4235,8 +4235,10 @@ def render_grouped_cards(df: pd.DataFrame, card_fn, day_col: str = None) -> str:
 PHASE_NAMES  = {0: 'Consolidatie', 1: 'Bodemfase', 2: 'Vroeg Herstel', 3: 'Sterke Uptrend'}
 PHASE_ICONS  = {0: '〰', 1: '⚡', 2: '🌱', 3: '🚀'}
 PHASE_COLORS = {0: '#8B95A5', 1: '#F0B90B', 2: '#2DD4BF', 3: '#00C853'}
-TREND_PERIOD       = "1y"                                  # opgehaalde historie
-TREND_WINDOWS      = {"3M": 63, "6M": 126, "1J": 252}      # handelsdagen per weergave
+TREND_PERIOD       = "5y"                                  # opgehaalde historie
+TREND_WINDOWS      = {"3M": 63, "6M": 126, "1J": 252, "2J": 504, "5J": 1260}   # handelsdagen per weergave
+TREND_RET_DAYS     = {"1M": 21, "3M": 63, "6M": 126, "1J": 252, "2J": 504, "5J": 1260}
+TREND_MAX_POINTS   = 360                                   # langere reeksen worden voor de weergave uitgedund
 TREND_HERSTEL_HOLD = 3                                     # een herstel-signaal blijft 3 dagen actief
 TREND_MIN_TICKERS  = 2                                     # minimaal aantal tickers per sector
 _MONTHS_NL = ['jan', 'feb', 'mrt', 'apr', 'mei', 'jun', 'jul', 'aug', 'sep', 'okt', 'nov', 'dec']
@@ -4324,7 +4326,7 @@ def trends_from_panels(close_df: pd.DataFrame, code_df: pd.DataFrame, sectors: d
         valid = cs.notna().sum(axis=1).replace(0, np.nan)
         mix   = pd.DataFrame({k: (cs == k).sum(axis=1) / valid for k in (0, 1, 2, 3)})
         ret   = {}
-        for lab, d in (('1M', 21), ('3M', 63), ('6M', 126)):
+        for lab, d in TREND_RET_DAYS.items():
             ret[lab] = float(index.iloc[-1] / index.iloc[-1 - d] * 100 - 100) if len(index) > d else np.nan
         out[sec] = {'index': index, 'phase': phase, 'mix': mix, 'n': len(cols), 'tickers': cols, 'ret': ret}
     return out
@@ -4390,7 +4392,24 @@ def _now_phase(tr: dict) -> int:
 def _pct_html(v) -> str:
     if v is None or (isinstance(v, float) and np.isnan(v)):
         return '<b>–</b>'
-    return f'<b class="{"up" if v >= 0 else "dn"}">{v:+.1f}%</b>'
+    return f'<b class="{"up" if v >= 0 else "dn"}">{v:+.0f}%</b>' if abs(v) >= 100 else f'<b class="{"up" if v >= 0 else "dn"}">{v:+.1f}%</b>'
+
+
+def _downsample(index: pd.Series, phase: pd.Series, mix: pd.DataFrame = None, max_pts: int = TREND_MAX_POINTS):
+    """Dunt lange reeksen uit (laatste punt blijft behouden); de fase-verdeling wordt gemiddeld."""
+    n = len(index)
+    if n <= max_pts:
+        return index, phase, mix
+    k = int(np.ceil(n / max_pts))
+    pos = np.arange(n - 1, -1, -k)[::-1]
+    return (index.iloc[pos], phase.iloc[pos],
+            mix.rolling(k, min_periods=1).mean().iloc[pos] if mix is not None else None)
+
+
+def _win_ret(tr: dict, days: int) -> float:
+    """Rendement van de sectorindex over `days` handelsdagen (bij kortere historie: vanaf het begin)."""
+    ix = tr['index']
+    return float(ix.iloc[-1] / ix.iloc[max(0, len(ix) - 1 - days)] * 100 - 100) if len(ix) > 1 else np.nan
 
 
 def _trend_svg(index: pd.Series, phase: pd.Series, mix: pd.DataFrame, w: int = 360) -> str:
@@ -4422,7 +4441,7 @@ def _trend_svg(index: pd.Series, phase: pd.Series, mix: pd.DataFrame, w: int = 3
         P.append(f'<polyline points="{pts}" fill="none" stroke="{PHASE_COLORS[c]}" stroke-width="2" '
                  f'stroke-linejoin="round" stroke-linecap="round"/>')
     for s, e, c in runs:                                           # instap in bodem / herstel
-        if c in (1, 2) and e - s >= 1:
+        if c in (1, 2) and e - s >= max(1, n // 60):          # bij lange reeksen alleen de duidelijke instappen
             P.append(f'<circle cx="{x(s):.1f}" cy="{y(v[s]):.1f}" r="3.2" fill="{PHASE_COLORS[c]}" '
                      f'stroke="#0B0E11" stroke-width="1.2"/>')
     lc = PHASE_COLORS[runs[-1][2]]
@@ -4446,16 +4465,20 @@ def _trend_svg(index: pd.Series, phase: pd.Series, mix: pd.DataFrame, w: int = 3
     P.append(f'<line x1="{padL}" x2="{w - padR}" y1="{by0 + hb}" y2="{by0 + hb}" stroke="#2B3139" stroke-width="1"/>')
     P.append(f'<text x="{padL}" y="{by0 - 7}" font-size="8.5" fill="#848E9C">Tickers per fase (max {smax * 100:.0f}%)</text>')
 
-    months = [(i, d) for i, d in enumerate(index.index) if i == 0 or d.month != index.index[i - 1].month]
-    step = max(1, int(np.ceil(len(months) / 6)))
+    long_span = (index.index[-1] - index.index[0]).days > 400
+    months = [(i, d) for i, d in enumerate(index.index)
+              if (i > 0 and d.month != index.index[i - 1].month and (not long_span or d.month in (1, 7)))
+              or (i == 0 and not long_span)]
+    step = max(1, int(np.ceil(len(months) / (5 if long_span else 6))))
     for j, (i, d) in enumerate(months):
         if j % step == 0 and padL + 10 < x(i) < w - padR - 8:
+            lab = f"{_MONTHS_NL[d.month - 1]} '{d.year % 100:02d}" if long_span else _MONTHS_NL[d.month - 1]
             P.append(f'<text x="{x(i):.1f}" y="{by0 + hb + 12}" font-size="8.5" fill="#848E9C" '
-                     f'text-anchor="middle">{_MONTHS_NL[d.month - 1]}</text>')
+                     f'text-anchor="middle">{lab}</text>')
     return f'<svg viewBox="0 0 {w} {H}" preserveAspectRatio="xMidYMid meet" role="img">{"".join(P)}</svg>'
 
 
-def _trend_spark(index: pd.Series, phase: pd.Series, w: int = 72, h: int = 24) -> str:
+def _trend_spark(index: pd.Series, phase: pd.Series, w: int = 60, h: int = 24) -> str:
     n = len(index)
     if n < 5:
         return ''
@@ -4478,14 +4501,15 @@ def _phase_pill(code: int) -> str:
 
 
 def render_sector_trend_card(name: str, tr: dict, days: int) -> str:
-    idx, ph, mix = tr['index'].iloc[-days:], tr['phase'].iloc[-days:], tr['mix'].iloc[-days:]
+    idx, ph, mix = _downsample(tr['index'].iloc[-days:], tr['phase'].iloc[-days:], tr['mix'].iloc[-days:])
     now = _now_phase(tr)
     last = mix.iloc[-1] if len(mix) else None
     legend = ''.join(
         f'<span><i style="background:{PHASE_COLORS[k]}"></i>{PHASE_ICONS[k]} {PHASE_NAMES[k]}'
         + (f' <b>{last[k] * 100:.0f}%</b>' if last is not None and not pd.isna(last[k]) else '') + '</span>'
         for k in (1, 2, 3, 0))
-    rets = ''.join(f'<span>{lab} {_pct_html(tr["ret"].get(lab))}</span>' for lab in ('1M', '3M', '6M'))
+    rets = ''.join(f'<span>{lab} {_pct_html(tr["ret"].get(lab))}</span>'
+                   for lab in TREND_RET_DAYS if not pd.isna(tr['ret'].get(lab)))
     return (f'<div class="qe-trend"><div class="t-h"><span class="t-n">{SECTOR_ICON.get(name, "▫")} {_esc(name)}'
             f' <span class="t-c">{tr["n"]} tickers</span></span>{_phase_pill(now)}</div>'
             f'<div class="t-r">{rets}</div>{_trend_svg(idx, ph, mix)}<div class="t-lg">{legend}</div></div>')
@@ -4525,23 +4549,31 @@ def sector_turnarounds(trends: dict, lookback: int = 15) -> list:
     return res
 
 
-def render_sector_trend_rank(trends: dict, days: int, selected: str = None) -> str:
+def render_sector_trend_rank(trends: dict, days: int, selected: str = None, per: str = "3M") -> str:
+    """Ranglijst van sectoren: rendement over de gekozen periode, plus 1M, met mini-verloop."""
+    wr = {sec: _win_ret(tr, days) for sec, tr in trends.items()}
+    order = sorted(trends, key=lambda s_: -(-999 if pd.isna(wr[s_]) else wr[s_]))
+    c2 = per if per != "1M" else "3M"
     rows = []
-    for sec, tr in sorted(trends.items(), key=lambda kv: -(kv[1]['ret'].get('3M') if not pd.isna(kv[1]['ret'].get('3M')) else -999)):
+    for sec in order:
+        tr = trends[sec]
         now = _now_phase(tr)
+        ix, ph, _ = _downsample(tr['index'].iloc[-days:], tr['phase'].iloc[-days:], None, 120)
+        r2 = wr[sec] if per != "1M" else tr['ret'].get('3M')
         rows.append(
             f'<div class="qe-tr-row{" sel" if sec == selected else ""}"><span class="n">{SECTOR_ICON.get(sec, "▫")}</span>'
             f'<span class="t">{_esc(sec)}<small>{PHASE_ICONS[now]} {PHASE_NAMES[now]}</small></span>'
-            f'{_trend_spark(tr["index"].iloc[-days:], tr["phase"].iloc[-days:])}'
-            f'<span class="v">{_pct_html(tr["ret"].get("1M"))}</span><span class="v">{_pct_html(tr["ret"].get("3M"))}</span></div>')
-    head = ('<div class="qe-tr-row hd"><span></span><span class="t">Sector · fase nu</span><span>Verloop</span>'
-            '<span class="v">1M</span><span class="v">3M</span></div>')
-    return f'<div class="qe-panel"><div class="p-t">🌐 Sectoren op trend (sterkste 3M bovenaan)</div>{head}{"".join(rows)}</div>'
+            f'{_trend_spark(ix, ph)}'
+            f'<span class="v">{_pct_html(tr["ret"].get("1M"))}</span><span class="v">{_pct_html(r2)}</span></div>')
+    head = (f'<div class="qe-tr-row hd"><span></span><span class="t">Sector · fase nu</span><span>Verloop</span>'
+            f'<span class="v">1M</span><span class="v">{c2}</span></div>')
+    return (f'<div class="qe-panel"><div class="p-t">🌐 Sectoren op trend (sterkste {per} bovenaan)</div>'
+            f'{head}{"".join(rows)}</div>')
 
 
 @st.cache_data(ttl=3600, max_entries=1500, show_spinner=False)
 def _trend_history(ticker: str) -> pd.DataFrame:
-    """1 jaar dagkoersen (alleen Open/Low/Close, licht). Gecachet 1 uur over sessies heen, zodat een
+    """5 jaar dagkoersen (alleen Open/Low/Close, licht). Gecachet 1 uur over sessies heen, zodat een
     onderbroken laadbeurt (telefoon in de zak) de volgende keer gewoon verder gaat. Fout = niet gecachet."""
     return _fetch_history(ticker, TREND_PERIOD, 60)[['Open', 'Low', 'Close']].astype('float32')
 
@@ -4643,7 +4675,7 @@ def sector_trend_section(own_tickers) -> None:
         st.markdown(render_sector_members(mem, sel, TREND_SORTS.get(srt or "Trend-score", "score"),
                                           0 if show_all else 10), unsafe_allow_html=True)
 
-    st.markdown(render_sector_trend_rank(trends, days, sel), unsafe_allow_html=True)
+    st.markdown(render_sector_trend_rank(trends, days, sel, per or "6M"), unsafe_allow_html=True)
     extra = f" · {memo['nosec']} zonder bekende sector overgeslagen" if memo.get('nosec') else ""
     st.caption(f"Gelijk gewogen index van {memo['ok']} van {memo['all']} tickers{extra}. Fases volgens de scanner-regels op "
                "dagdata; Vroeg Herstel is benaderd (groene kaars die de rode dag ervoor terugwint). "
