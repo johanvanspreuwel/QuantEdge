@@ -3291,13 +3291,293 @@ def fetch_yahoo_rss(ticker: str) -> list:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# ALPHA TRACKER — de beste Alpha-scan-resultaten over langere tijd volgen
+#   • elke "snapshot" = dezelfde Alpha Scan (run_scanner) + score + opslag
+#   • per ticker: hoe vaak in de top, rendement sinds eerste keer, en of hij uit
+#     de bodem komt ("op weg omhoog")
+#   • opslag: GitHub-bestand (zoals je tickerlijst) + lokaal bestand als terugval
+# ─────────────────────────────────────────────────────────────────────────────
+ALPHA_HISTORY_FILE = "quantedge_alpha_history.json"
+ALPHA_UP_MIN_RET   = 3.0     # % boven de koers van de laatste keer in de top → "op weg omhoog"
+ALPHA_FIRST_MIN_RET = 1.0    # % → "eerste herstel"
+ALPHA_BROKEN_RET   = -4.0    # % onder de koers van de laatste keer → "support gebroken"
+
+ALPHA_STATUS = {             # sleutel: (label, kaarttint, volgorde)
+    'up':      ("🚀 Op weg omhoog",    't-g', 0),
+    'first':   ("↗ Eerste herstel",    't-g', 1),
+    'bottom':  ("🔎 In bodem",         't-y', 2),
+    'wait':    ("⏳ Afwachten",         '',    3),
+    'broken':  ("🔴 Support gebroken", 't-r', 4),
+    'nodata':  ("⚠ Geen data",         't-x', 5),
+}
+
+
+def _alpha_local_path() -> str:
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), ALPHA_HISTORY_FILE)
+
+
+def _alpha_gh():
+    """(token, repo, bestandsnaam) voor de historie; hergebruikt je bestaande GitHub-secrets."""
+    token, repo, _ = _get_github_config()
+    fname = ALPHA_HISTORY_FILE
+    try:
+        fname = st.secrets.get("GITHUB_ALPHA_FILE", ALPHA_HISTORY_FILE)
+    except Exception:
+        pass
+    return token, repo, fname
+
+
+def alpha_load_history() -> dict:
+    empty = {'version': 1, 'snapshots': []}
+    token, repo, fname = _alpha_gh()
+    if token and repo:
+        try:
+            url  = f"https://api.github.com/repos/{repo}/contents/{fname}"
+            hdrs = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github.raw+json",
+                    "X-GitHub-Api-Version": "2022-11-28"}
+            resp = requests.get(url, headers=hdrs, timeout=15)
+            if resp.status_code == 200:
+                data = json.loads(resp.text)
+                if isinstance(data.get('snapshots'), list):
+                    return data
+            elif resp.status_code == 404:
+                pass                                     # nog geen historie op GitHub
+        except Exception:
+            pass
+    try:
+        with open(_alpha_local_path(), encoding='utf-8') as f:
+            data = json.load(f)
+        if isinstance(data.get('snapshots'), list):
+            return data
+    except Exception:
+        pass
+    return empty
+
+
+def alpha_save_history(hist: dict, message: str = "QuantEdge: alpha-snapshot") -> tuple:
+    """Slaat op naar GitHub én lokaal. Retourneert (ok, melding)."""
+    payload_txt = json.dumps(hist, separators=(',', ':'), ensure_ascii=False)
+    try:
+        with open(_alpha_local_path(), 'w', encoding='utf-8') as f:
+            f.write(payload_txt)
+    except Exception:
+        pass
+    token, repo, fname = _alpha_gh()
+    if not (token and repo):
+        return False, "Geen GitHub-token ingesteld — historie alleen lokaal bewaard (verdwijnt bij herstart van de app)"
+    try:
+        import base64
+        url  = f"https://api.github.com/repos/{repo}/contents/{fname}"
+        hdrs = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28"}
+        sha  = None
+        resp = requests.get(url, headers=hdrs, timeout=15)
+        if resp.status_code == 200:
+            sha = resp.json().get("sha")
+        elif resp.status_code == 401:
+            return False, "GitHub-token ongeldig (401)"
+        body = {"message": message, "content": base64.b64encode(payload_txt.encode("utf-8")).decode("utf-8")}
+        if sha:
+            body["sha"] = sha
+        resp = requests.put(url, headers=hdrs, json=body, timeout=20)
+        if resp.status_code in (200, 201):
+            return True, "OK"
+        return False, f"GitHub-fout {resp.status_code}"
+    except Exception as e:
+        return False, str(e)
+
+
+def _num(v, default=np.nan) -> float:
+    try:
+        return float(str(v).replace(',', '.'))
+    except (TypeError, ValueError):
+        return default
+
+
+def alpha_score(rsi: float, dev: float, vol: float, rr: float, mtf: str) -> float:
+    """
+    Kwaliteitsscore 0–100 van één Alpha-hit (hoger = sterker bodem-setup):
+      30  dicht bij support            (0% boven support = 30, 5% = 0)
+      25  diep oversold                (RSI 20 = 25, RSI 45 = 0)
+      25  weekly-trend/MTF-oordeel     (APPROVED 25, WATCH 10)
+      10  Risk:Reward                  (≥ 2× doel-R:R = 10)
+      10  volume t.o.v. 20D            (≥ 1.5× = 10)
+    """
+    s = 0.0
+    if not np.isnan(dev):
+        s += 30 * max(0.0, 1 - dev / max(SCAN_ALPHA_DEV_MAX, 0.1))
+    if not np.isnan(rsi):
+        s += 25 * min(1.0, max(0.0, (SCAN_ALPHA_RSI_MAX - rsi) / max(SCAN_ALPHA_RSI_MAX - 20, 1)))
+    s += {'APPROVED': 25, 'WATCH': 10}.get(str(mtf), 0)
+    if not np.isnan(rr):
+        s += 10 * min(1.0, rr / (2 * TRADE_REWARD_RATIO))
+    if not np.isnan(vol):
+        s += 10 * min(1.0, vol / 1.5)
+    return round(s, 1)
+
+
+def alpha_make_snapshot(result_df: pd.DataFrame, pool_size: int, keep_top: int) -> dict:
+    items = []
+    if result_df is not None and not result_df.empty:
+        for _, r in result_df.iterrows():
+            rsi = _num(r.get('RSI (14D)'));  dev = _num(r.get('Dev Support %'))
+            vol = _num(r.get('Vol Ratio'));  rr  = _num(r.get('R:R'))
+            px  = _num(r.get('Koers'));      mtf = str(r.get('MTF Status', ''))
+            if np.isnan(px):
+                continue
+            items.append({
+                't': str(r['Ticker']), 'px': round(px, 2),
+                'rsi': None if np.isnan(rsi) else round(rsi),
+                'dev': None if np.isnan(dev) else round(dev, 2),
+                'vol': None if np.isnan(vol) else round(vol, 2),
+                'rr':  None if np.isnan(rr) else round(rr, 2),
+                'mtf': mtf, 'score': alpha_score(rsi, dev, vol, rr, mtf),
+            })
+    items.sort(key=lambda d: d['score'], reverse=True)
+    return {'ts': _now_nl().isoformat(timespec='minutes'), 'pool': int(pool_size),
+            'hits': len(items), 'top': items[:keep_top], 'states': {}}
+
+
+def alpha_status(core, last_px: float, last_rsi) -> str:
+    """Bepaal de status van een gevolgde ticker t.o.v. de laatste keer dat hij in de top stond."""
+    if not core:
+        return 'nodata'
+    px, rsi, dev = core['last_price'], core['rsi'], core['deviation']
+    rsi_ok = rsi is not None and not (isinstance(rsi, float) and np.isnan(rsi))
+    ret_last = (px / last_px - 1) * 100 if last_px else 0.0
+    left_zone = (rsi_ok and rsi > SCAN_ALPHA_RSI_MAX) or dev > SCAN_ALPHA_DEV_MAX
+    rising    = rsi_ok and last_rsi is not None and rsi > last_rsi
+    if dev < 0 or ret_last <= ALPHA_BROKEN_RET:
+        return 'broken'
+    if left_zone and ret_last >= ALPHA_UP_MIN_RET and rising:
+        return 'up'
+    if ret_last >= ALPHA_FIRST_MIN_RET and rising:
+        return 'first'
+    if not left_zone:
+        return 'bottom'
+    return 'wait'
+
+
+def alpha_fetch_current(tickers: list) -> dict:
+    """Actuele dagdata van alle gevolgde tickers, parallel (5 min gecachet)."""
+    def _w(t):
+        try:
+            return _fetch_daily_core(t, DATA_MAIN_PERIOD)
+        except Exception:
+            return None
+    res = _parallel_map(_w, tickers)
+    return {t: (r if isinstance(r, dict) else None) for t, r in res.items()}
+
+
+def alpha_evaluate(hist: dict, cur: dict) -> pd.DataFrame:
+    """Eén rij per ooit-gevolgde ticker, met statistieken en actuele status."""
+    snaps = hist.get('snapshots', [])
+    seen = {}
+    for i, sn in enumerate(snaps):
+        for it in sn.get('top', []):
+            d = seen.setdefault(it['t'], {'recs': []})
+            d['recs'].append((i, sn['ts'], it))
+    rows = []
+    n_snaps = len(snaps)
+    for t, d in seen.items():
+        recs = d['recs']
+        first_i, first_ts, first_it = recs[0]
+        last_i,  last_ts,  last_it  = recs[-1]
+        scores = [r[2]['score'] for r in recs]
+        since_first = n_snaps - first_i
+        core = cur.get(t)
+        px_now = core['last_price'] if core else np.nan
+        rsi_now = core['rsi'] if core else np.nan
+        key = alpha_status(core, last_it['px'], last_it.get('rsi'))
+        rows.append({
+            'Ticker': t,
+            'Status': ALPHA_STATUS[key][0], '_status': key,
+            'Keer in top': len(recs), 'Van snapshots': since_first,
+            'Consistentie %': round(100 * len(recs) / since_first),
+            'Gem. score': round(float(np.mean(scores)), 1), 'Beste score': max(scores),
+            'Eerste keer': first_ts[:10], 'Instapkoers': first_it['px'],
+            'Laatst in top': last_ts[:10], 'Koers laatst': last_it['px'],
+            'RSI laatst': last_it.get('rsi'),
+            'Koers nu': px_now, 'RSI nu': rsi_now,
+            'Afw. support nu %': core['deviation'] if core else np.nan,
+            'Rend. sinds 1e keer %': round((px_now / first_it['px'] - 1) * 100, 1) if core and first_it['px'] else np.nan,
+            'Rend. sinds laatst %':  round((px_now / last_it['px'] - 1) * 100, 1) if core and last_it['px'] else np.nan,
+            '_symbol': _currency_symbol(t),
+            '_in_latest': last_i == n_snaps - 1,
+        })
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        for c in ('RSI nu', 'RSI laatst'):
+            df[c] = pd.to_numeric(df[c], errors='coerce')
+    return df
+
+
+ALPHA_SORTS = {
+    "Meest consistent":         (['Keer in top', 'Gem. score'], [False, False]),
+    "Hoogste gem. score":       (['Gem. score', 'Keer in top'], [False, False]),
+    "Beste rendement":          (['Rend. sinds 1e keer %'],     [False]),
+    "Status (omhoog eerst)":    (['_ord', 'Keer in top'],       [True, False]),
+}
+
+
+def alpha_sorted(df: pd.DataFrame, sort_key: str) -> pd.DataFrame:
+    if df.empty:
+        return df
+    out = df.copy()
+    out['_ord'] = out['_status'].map(lambda k: ALPHA_STATUS[k][2])
+    cols, asc = ALPHA_SORTS.get(sort_key, ALPHA_SORTS["Meest consistent"])
+    return out.sort_values(cols, ascending=asc, na_position='last')
+
+
+def _fmt_pct(v) -> str:
+    return '–' if pd.isna(v) else f"{v:+.1f}%"
+
+
+def render_alpha_cards(df: pd.DataFrame) -> str:
+    if df is None or df.empty:
+        return '<div class="qe-empty">Geen tickers voor dit filter.</div>'
+    parts = ['<div class="qe-list">']
+    for _, r in df.iterrows():
+        key  = r['_status']
+        tone = ALPHA_STATUS[key][1]
+        sym  = r['_symbol']
+        px   = '–' if pd.isna(r['Koers nu']) else f"{sym}{r['Koers nu']:,.2f}"
+        ret1 = r['Rend. sinds 1e keer %']
+        ret_cls = 'g' if (pd.notna(ret1) and ret1 > 0) else 'r' if (pd.notna(ret1) and ret1 < 0) else ''
+        act_cls = 'g' if key in ('up', 'first') else 'r' if key == 'broken' else 'y' if key == 'bottom' else ''
+        rsi_txt = f"{r['RSI laatst']:.0f}→{r['RSI nu']:.0f}" if pd.notna(r['RSI nu']) and pd.notna(r['RSI laatst']) else '–'
+        body = (
+            _field('Eerste keer', f"{r['Eerste keer']} @ {sym}{r['Instapkoers']:,.2f}")
+            + _field('Laatst in top', f"{r['Laatst in top']} @ {sym}{r['Koers laatst']:,.2f}")
+            + _field('Rend. sinds 1e keer', _fmt_pct(ret1))
+            + _field('Rend. sinds laatst', _fmt_pct(r['Rend. sinds laatst %']))
+            + _field('RSI (toen → nu)', rsi_txt)
+            + _field('Afw. support nu', '–' if pd.isna(r['Afw. support nu %']) else f"{r['Afw. support nu %']:.1f}%")
+            + _field('Gem. / beste score', f"{r['Gem. score']:.0f} / {r['Beste score']:.0f}")
+            + _field('Consistentie', f"{int(r['Keer in top'])} van {int(r['Van snapshots'])} scans")
+        )
+        parts.append(
+            f'<details class="qe-card {tone}"><summary>'
+            f'<div class="qe-r1"><span class="qe-tk">{_esc(str(r["Ticker"]))}</span><span class="qe-px">{_esc(px)}</span></div>'
+            f'<div class="qe-r2"><div class="qe-chips">'
+            f'<span class="qe-act {act_cls}">{_esc(ALPHA_STATUS[key][0])}</span>'
+            f'<span class="qe-chip">🏆 <b>{int(r["Keer in top"])}×</b></span>'
+            f'<span class="qe-chip {ret_cls}">Sinds 1e <b>{_esc(_fmt_pct(ret1))}</b></span>'
+            f'</div></div></summary><div class="qe-body">{body}</div></details>'
+        )
+    parts.append('</div>')
+    return ''.join(parts)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # MAIN NAVIGATION  (Watchlist-tab verwijderd – functionaliteit in Tab 1)
 # ─────────────────────────────────────────────────────────────────────────────
 main_tabs = st.tabs([
     "📊 Market Tracker",
     "🔍 Multi-Strategie Scanner",
     "📈 Deep Dive & Grafiek",
-    "📡 Live Monitor"])
+    "📡 Live Monitor",
+    "🏆 Alpha Tracker"])
 
 # ═════════════════════════════════════════════════════════════════════════════
 # TAB 1: CORE MARKET TRACKER  (+ ingebouwde Watchlist)
@@ -4446,6 +4726,183 @@ with main_tabs[2]:
                 except Exception:
                     st.info(f"📭 Geen nieuws beschikbaar voor {active_ticker}.")
 
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# TAB 5: ALPHA TRACKER
+# ═════════════════════════════════════════════════════════════════════════════
+with main_tabs[4]:
+    st.markdown("### 🏆 Alpha Tracker")
+    st.caption("Neem regelmatig dezelfde Alpha Scan op en volg de beste uitkomsten. "
+               "Zo zie je welke aandelen steeds terugkomen — en welke uit de bodem omhoog komen.")
+
+    if 'alpha_history' not in st.session_state:
+        st.session_state['alpha_history'] = alpha_load_history()
+    hist  = st.session_state['alpha_history']
+    snaps = hist.get('snapshots', [])
+
+    # ── Snapshot nemen ────────────────────────────────────────────────────────
+    with st.container(key="qe_row_alpha1"):
+        _al1, _al2 = st.columns(2)
+        with _al1:
+            alpha_keep = st.selectbox("Bewaar top", [5, 10, 15, 25], index=1, key="alpha_keep_top",
+                                      format_func=lambda n: f"Top {n} per scan")
+        with _al2:
+            st.markdown("<div style='height:1.7rem'></div>", unsafe_allow_html=True)
+            alpha_large = st.toggle("🌐 Grote pool", value=False, key="alpha_use_large",
+                                    help="Uit = jouw eigen tickers (snel). Aan = 1000+ tickers (langzaam).")
+
+    if snaps:
+        st.caption(f"{len(snaps)} snapshot(s) · laatste: {snaps[-1]['ts'].replace('T', ' ')} "
+                   f"({snaps[-1].get('hits', '?')} hits van {snaps[-1].get('pool', '?')} tickers)")
+
+    if st.button("📸 Alpha Scan draaien & snapshot opslaan", key="btn_alpha_snapshot"):
+        st.session_state['scan_running'] = True
+        try:
+            st.session_state['lm_active'] = False
+        except Exception:
+            pass
+        try:
+            _pool = load_ticker_pool(use_large_pool=alpha_large)
+            st.info(f"🔍 Alpha Scan gestart op **{len(_pool)} tickers**…")
+            _res  = run_scanner("alpha_scanner", _pool)
+            _snap = alpha_make_snapshot(_res, len(_pool), alpha_keep)
+            if not _snap['top']:
+                st.warning("Geen Alpha-hits gevonden; er is geen snapshot opgeslagen.")
+            else:
+                hist['snapshots'].append(_snap)
+                _tracked = sorted({it['t'] for sn in hist['snapshots'] for it in sn['top']})
+                _cur = alpha_fetch_current(_tracked)
+                _df0 = alpha_evaluate(hist, _cur)
+                _snap['states'] = dict(zip(_df0['Ticker'], _df0['_status']))
+                st.session_state.pop('_alpha_eval', None)
+                _ok, _msg = alpha_save_history(hist)
+                if _ok:
+                    st.success(f"✅ Snapshot opgeslagen ({len(_snap['top'])} tickers in de top).")
+                else:
+                    st.warning(f"Snapshot staat in deze sessie, maar opslaan op GitHub mislukte: {_msg}")
+        finally:
+            st.session_state['scan_running'] = False
+        snaps = hist.get('snapshots', [])
+
+    # ── Overzicht van gevolgde tickers ────────────────────────────────────────
+    if not snaps:
+        st.info("Nog geen snapshots. Tik hierboven op **Alpha Scan draaien** om te beginnen. "
+                "Herhaal dit bijvoorbeeld elke dag of week.")
+    else:
+        _tracked = sorted({it['t'] for sn in snaps for it in sn['top']})
+        _ck = (len(snaps), tuple(_tracked))
+        _cache = st.session_state.get('_alpha_eval')
+        if not _cache or _cache['key'] != _ck or time.time() - _cache['ts'] > MAIN_TABLE_REUSE_SECS:
+            with st.spinner("Actuele koersen van gevolgde tickers ophalen…"):
+                _df_all = alpha_evaluate(hist, alpha_fetch_current(_tracked))
+            st.session_state['_alpha_eval'] = {'key': _ck, 'ts': time.time(), 'df': _df_all}
+        df_all = st.session_state['_alpha_eval']['df']
+
+        n_up     = int((df_all['_status'] == 'up').sum())
+        n_first  = int((df_all['_status'] == 'first').sum())
+        n_bottom = int((df_all['_status'] == 'bottom').sum())
+        st.markdown(render_kpis([
+            ("🚀 Op weg omhoog", n_up, 'g'), ("↗ Eerste herstel", n_first, 'g'),
+            ("🔎 Nog in bodem", n_bottom, ''), ("📸 Scans / tickers", f"{len(snaps)} / {len(df_all)}", ''),
+        ]), unsafe_allow_html=True)
+
+        # Nieuw sinds de laatste snapshot: wie is er net omhoog gekomen?
+        prev_states = snaps[-1].get('states') or {}
+        moved = [(t, prev_states.get(t)) for t, k in zip(df_all['Ticker'], df_all['_status'])
+                 if k in ('up', 'first') and prev_states.get(t) not in (None, k)]
+        if moved:
+            st.success("🚀 **Net omhoog sinds de laatste scan:** " + ", ".join(
+                f"{t} (was {ALPHA_STATUS.get(p, ('?',))[0]})" for t, p in moved))
+
+        ALPHA_FILTERS = ["Alles", "🚀 Omhoog", "🔎 In bodem", "🔴 Gebroken", "🏆 Meerdere keren"]
+        try:
+            a_flt = st.pills("Filter", ALPHA_FILTERS, default="Alles", key="alpha_filter",
+                             label_visibility="collapsed")
+        except Exception:
+            a_flt = st.radio("Filter", ALPHA_FILTERS, horizontal=True, key="alpha_filter_r",
+                             label_visibility="collapsed")
+        a_flt = a_flt or "Alles"
+        a_sort = st.selectbox("Sorteer", list(ALPHA_SORTS.keys()), key="alpha_sort",
+                              label_visibility="collapsed")
+
+        view = df_all
+        if a_flt == "🚀 Omhoog":
+            view = view[view['_status'].isin(['up', 'first'])]
+        elif a_flt == "🔎 In bodem":
+            view = view[view['_status'] == 'bottom']
+        elif a_flt == "🔴 Gebroken":
+            view = view[view['_status'] == 'broken']
+        elif a_flt == "🏆 Meerdere keren":
+            view = view[view['Keer in top'] >= 2]
+        view = alpha_sorted(view, a_sort)
+
+        if st.session_state.get('mobile_view', False):
+            st.markdown(render_alpha_cards(view), unsafe_allow_html=True)
+        elif view.empty:
+            st.info("Geen tickers voor dit filter.")
+        else:
+            show_cols = ['Ticker', 'Status', 'Keer in top', 'Van snapshots', 'Gem. score', 'Beste score',
+                         'Eerste keer', 'Instapkoers', 'Koers nu', 'Rend. sinds 1e keer %',
+                         'Rend. sinds laatst %', 'RSI laatst', 'RSI nu', 'Afw. support nu %']
+            st.dataframe(view[show_cols], width='stretch', hide_index=True,
+                         height=min(640, 60 + 36 * len(view)),
+                         column_config={
+                             'Rend. sinds 1e keer %': st.column_config.NumberColumn(format="%+.1f%%"),
+                             'Rend. sinds laatst %':  st.column_config.NumberColumn(format="%+.1f%%"),
+                             'Afw. support nu %':     st.column_config.NumberColumn(format="%.1f%%"),
+                             'Instapkoers':           st.column_config.NumberColumn(format="%.2f"),
+                             'Koers nu':              st.column_config.NumberColumn(format="%.2f"),
+                             'RSI laatst':            st.column_config.NumberColumn(format="%.0f"),
+                             'RSI nu':                st.column_config.NumberColumn(format="%.0f"),
+                         })
+
+        # ── Acties op een gevolgde ticker ─────────────────────────────────────
+        st.markdown("---")
+        a_pick = st.selectbox("🔭 Ticker", df_all['Ticker'].tolist(), key="alpha_pick")
+        with st.container(key="qe_row_alpha2"):
+            _p1, _p2 = st.columns(2)
+            with _p1:
+                if st.button("📈 Deep Dive", key="btn_alpha_dive"):
+                    st.session_state.current_alpha = a_pick
+                    st.success(f"✅ {a_pick} geladen → ga naar '📈 Deep Dive & Grafiek'")
+            with _p2:
+                if st.button("📌 Live Monitor", key="btn_alpha_pin"):
+                    if a_pick not in st.session_state['pinned_tickers']:
+                        st.session_state['pinned_tickers'].append(a_pick)
+                    st.success(f"📌 {a_pick} vastgezet in Live Monitor.")
+
+        # ── Historie & uitleg ─────────────────────────────────────────────────
+        with st.expander("🗂 Snapshot-historie", expanded=False):
+            for sn in reversed(snaps[-15:]):
+                tops = ", ".join(f"{it['t']} ({it['score']:.0f})" for it in sn['top'][:6])
+                st.markdown(f"**{sn['ts'].replace('T', ' ')}** · {sn.get('hits', '?')} hits  \n"
+                            f"<span style='color:#848E9C;font-size:.8rem;'>{_esc(tops)}</span>",
+                            unsafe_allow_html=True)
+            if st.button("↩ Laatste snapshot verwijderen", key="btn_alpha_undo"):
+                hist['snapshots'].pop()
+                st.session_state.pop('_alpha_eval', None)
+                _ok, _msg = alpha_save_history(hist, "QuantEdge: alpha-snapshot verwijderd")
+                if not _ok:
+                    st.warning(f"Verwijderd in deze sessie; opslaan mislukte: {_msg}")
+                st.rerun()
+
+        with st.expander("ℹ️ Hoe werkt dit?", expanded=False):
+            st.markdown(
+                f"""
+**Score (0–100)** per Alpha-hit: 30 punten voor dichtbij support · 25 voor diep oversold RSI · 25 voor het weekly-trend/MTF-oordeel
+(APPROVED 25, WATCH 10) · 10 voor Risk:Reward · 10 voor volume.
+
+**Status** t.o.v. de laatste keer dat de ticker in de top stond:
+- 🚀 **Op weg omhoog** — uit de bodemzone (RSI > {SCAN_ALPHA_RSI_MAX} of > {SCAN_ALPHA_DEV_MAX}% boven support), koers ≥ {ALPHA_UP_MIN_RET:.0f}% hoger en RSI stijgend
+- ↗ **Eerste herstel** — koers ≥ {ALPHA_FIRST_MIN_RET:.0f}% hoger en RSI stijgend
+- 🔎 **In bodem** — voldoet nog aan de Alpha-zone
+- 🔴 **Support gebroken** — onder support of ≥ {abs(ALPHA_BROKEN_RET):.0f}% lager
+- ⏳ **Afwachten** — niets van het bovenstaande
+
+Een snapshot draait alleen als je de app opent en op de knop tikt; de app draait niet op de achtergrond.
+Geen financieel advies.
+""")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
