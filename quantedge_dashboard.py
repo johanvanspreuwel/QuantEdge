@@ -354,6 +354,28 @@ st.markdown("""
   .qe-sec { grid-template-columns: 22px 1fr 1fr auto; }
   .qe-sec .v b.up { color: var(--green); } .qe-sec .v b.dn { color: var(--red); }
   .qe-hint { font-size: .72rem; color: var(--text-muted); margin: 2px 0 8px; }
+  /* ── Sector-trend ─────────────────────────────────────────────────────── */
+  .qe-trend { background: var(--bg-secondary); border: 1px solid rgba(255,255,255,.06); border-radius: 16px; padding: 12px 12px 10px; margin: 6px 0 12px; }
+  .qe-trend .t-h { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 4px; }
+  .qe-trend .t-n { font-weight: 700; font-size: 1rem; color: #F4F6F8; }
+  .qe-trend .t-c { font-weight: 400; font-size: .72rem; color: var(--text-muted); margin-left: 4px; }
+  .qe-trend .t-r { display: flex; gap: 14px; font-size: .78rem; color: var(--text-muted); margin: 2px 0 6px; }
+  .qe-trend .t-r b { font-family: 'JetBrains Mono', monospace; }
+  .qe-trend svg { width: 100%; height: auto; max-height: 340px; display: block; }
+  .qe-trend .t-lg { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: .72rem; color: var(--text-muted); margin-top: 6px; }
+  .qe-trend .t-lg i { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+  .qe-trend .t-lg b { color: var(--text-primary); }
+  .qe-ph { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: .7rem; font-weight: 700; color: #0B0E11; white-space: nowrap; }
+  .qe-tr-row { display: grid; grid-template-columns: 22px minmax(0,1fr) 72px 46px 46px; align-items: center; gap: 6px; padding: 7px 4px; border-top: 1px solid rgba(255,255,255,.05); font-size: .82rem; }
+  .qe-tr-row.hd { border-top: 0; font-size: .66rem; text-transform: uppercase; letter-spacing: .6px; color: var(--text-muted); padding-top: 2px; }
+  .qe-tr-row.mem { grid-template-columns: 18px minmax(0,1fr) 44px 54px 58px; }
+  .qe-tr-row.mem .n { color: var(--text-muted); font-size: .72rem; text-align: right; }
+  .qe-tr-row.hd .t { color: var(--text-muted); font-weight: 400; }
+  .qe-tr-row.sel { background: rgba(240,185,11,.07); border-radius: 8px; }
+  .qe-tr-row .t { color: #F4F6F8; font-weight: 600; line-height: 1.15; overflow: hidden; overflow-wrap: anywhere; }
+  .qe-tr-row .t small { display: block; font-weight: 400; font-size: .68rem; color: var(--text-muted); }
+  .qe-tr-row .v { text-align: right; font-family: 'JetBrains Mono', monospace; font-size: .76rem; }
+
   .qe-dots { display: inline-flex; gap: 3px; }
   .qe-dots i { width: 9px; height: 9px; border-radius: 50%; background: var(--bg-card); border: 1px solid var(--border); }
   .qe-dots i.on { background: var(--gold); border-color: var(--gold); }
@@ -4115,7 +4137,7 @@ def _fetch_sector(ticker: str) -> str:
     raise ValueError("geen sector")
 
 
-def sector_map(tickers, max_lookups: int = 200) -> dict:
+def sector_map(tickers, max_lookups: int = 200, lookup: bool = True) -> dict:
     """{ticker: sectornaam}. Eigen lijst eerst; de rest via Yahoo (parallel, eenmalig per sessie)."""
     out, todo = {}, []
     miss = st.session_state.setdefault('_sector_miss', set())
@@ -4128,7 +4150,7 @@ def sector_map(tickers, max_lookups: int = 200) -> dict:
             out[t] = SECTOR_SEED[t]
         elif t.upper() in wiki:
             out[t] = wiki[t.upper()]
-        elif t in miss:
+        elif t in miss or not lookup:
             out[t] = 'Onbekend'
         else:
             todo.append(t)
@@ -4205,6 +4227,427 @@ def render_grouped_cards(df: pd.DataFrame, card_fn, day_col: str = None) -> str:
             f'<details class="qe-grp" open><summary><span class="g-n">{SECTOR_ICON.get(s, "▫")} {_esc(s)}</span>'
             f'<span class="g-r"><span class="qe-chip">{len(sub)}</span>{pill}</span></summary>{card_fn(sub)}</details>')
     return ''.join(parts)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTOR-TREND  (historie: scanner-fases per dag, per sector)
+# ─────────────────────────────────────────────────────────────────────────────
+PHASE_NAMES  = {0: 'Consolidatie', 1: 'Bodemfase', 2: 'Vroeg Herstel', 3: 'Sterke Uptrend'}
+PHASE_ICONS  = {0: '〰', 1: '⚡', 2: '🌱', 3: '🚀'}
+PHASE_COLORS = {0: '#8B95A5', 1: '#F0B90B', 2: '#2DD4BF', 3: '#00C853'}
+TREND_PERIOD       = "1y"                                  # opgehaalde historie
+TREND_WINDOWS      = {"3M": 63, "6M": 126, "1J": 252}      # handelsdagen per weergave
+TREND_HERSTEL_HOLD = 3                                     # een herstel-signaal blijft 3 dagen actief
+TREND_MIN_TICKERS  = 2                                     # minimaal aantal tickers per sector
+_MONTHS_NL = ['jan', 'feb', 'mrt', 'apr', 'mei', 'jun', 'jul', 'aug', 'sep', 'okt', 'nov', 'dec']
+
+
+def _phase_codes(close: pd.Series, open_: pd.Series, low: pd.Series) -> pd.Series:
+    """Scanner-fase per dag (0 consolidatie, 1 bodem, 2 herstel, 3 uptrend; NaN = te weinig data).
+    Zelfde drempels en volgorde als determine_phase(). Bodemfase en Sterke Uptrend zijn exact;
+    Vroeg Herstel is benaderd op dagdata: een groene kaars die de rode dag ervoor volledig terugwint
+    (bullish-engulfing-achtig), RSI > 42 en nog dicht bij support (het echte patroon vraagt candlestick-herkenning per dag)."""
+    close = pd.to_numeric(close, errors='coerce')
+    delta = close.diff()
+    gain  = delta.clip(lower=0).rolling(RSI_PERIOD, min_periods=RSI_PERIOD).mean()
+    loss  = (-delta.clip(upper=0)).rolling(RSI_PERIOD, min_periods=RSI_PERIOD).mean()
+    rsi   = 100 - 100 / (1 + gain / loss.where(loss != 0))
+    rsi   = rsi.where(~((loss == 0) & gain.notna()), 100.0)
+    support = pd.to_numeric(low, errors='coerce').rolling(SUPPORT_WINDOW, min_periods=1).min()
+    dev   = (close - support) / support.where(support > 0) * 100
+
+    bodem    = (dev >= 0) & (dev <= PHASE_BODEM_DEV_MAX) & (rsi < PHASE_BODEM_RSI_MAX)
+    reversal = (close > open_) & (close.shift(1) < open_.shift(1)) & (close >= open_.shift(1))   # groene kaars die de rode dag ervoor overtreft
+    sig      = (reversal & (rsi > PHASE_HERSTEL_RSI_MIN) & (dev <= PHASE_UPTREND_DEV_MIN)).astype(float)
+    herstel  = sig.rolling(TREND_HERSTEL_HOLD, min_periods=1).max() > 0
+    uptrend  = (dev > PHASE_UPTREND_DEV_MIN) & (rsi > PHASE_UPTREND_RSI_MIN)
+
+    codes = pd.Series(0.0, index=close.index)
+    codes[uptrend] = 3.0
+    codes[herstel] = 2.0
+    codes[bodem]   = 1.0                                   # hoogste prioriteit, zoals in determine_phase
+    codes[rsi.isna() | close.isna()] = np.nan
+    return codes
+
+
+def _naive_index(df: pd.DataFrame) -> pd.DatetimeIndex:
+    idx = pd.DatetimeIndex(df.index)
+    if idx.tz is not None:
+        idx = idx.tz_localize(None)
+    return idx.normalize()
+
+
+def build_trend_panels(hist: dict):
+    """{ticker: DataFrame} → (close_df, code_df): koersen en scanner-fase per dag, kolom per ticker."""
+    closes, codes = {}, {}
+    for t, df in hist.items():
+        try:
+            idx = _naive_index(df)
+            keep = ~idx.duplicated()
+            c = pd.Series(pd.to_numeric(df['Close'], errors='coerce').to_numpy()[keep], index=idx[keep])
+            o = pd.Series(pd.to_numeric(df['Open'],  errors='coerce').to_numpy()[keep], index=idx[keep])
+            l = pd.Series(pd.to_numeric(df['Low'],   errors='coerce').to_numpy()[keep], index=idx[keep])
+            closes[t] = c
+            codes[t]  = _phase_codes(c, o, l)
+        except Exception:
+            continue
+    if not closes:
+        return pd.DataFrame(), pd.DataFrame()
+    close_df = pd.DataFrame(closes).sort_index().ffill(limit=3).astype('float32')
+    code_df  = pd.DataFrame(codes).reindex(close_df.index).astype('float32')
+    return close_df, code_df
+
+
+def trends_from_panels(close_df: pd.DataFrame, code_df: pd.DataFrame, sectors: dict) -> dict:
+    """→ {sector: {'index', 'phase', 'mix', 'n', 'tickers', 'ret'}}.
+    'index' = gelijk gewogen sectorindex (start 100), 'phase' = scanner-fase van die index per dag,
+    'mix' = aandeel tickers per fase per dag (kolommen 0..3)."""
+    if close_df is None or close_df.empty:
+        return {}
+    ret_df = close_df / close_df.shift(1) - 1
+    by_sec = {}
+    for t in close_df.columns:
+        by_sec.setdefault(sectors.get(t, 'Onbekend'), []).append(t)
+
+    out = {}
+    for sec, cols in by_sec.items():
+        if sec == 'Onbekend' or len(cols) < TREND_MIN_TICKERS:
+            continue
+        cnt  = ret_df[cols].notna().sum(axis=1)
+        mask = cnt >= max(1, int(np.ceil(len(cols) * 0.5)))
+        r    = ret_df[cols].mean(axis=1, skipna=True)[mask]
+        if len(r) < 40:
+            continue
+        index = (1 + r.fillna(0)).cumprod() * 100
+        phase = _phase_codes(index, index.shift(1), index)          # open = vorige slotkoers
+        cs    = code_df.loc[index.index, cols]
+        valid = cs.notna().sum(axis=1).replace(0, np.nan)
+        mix   = pd.DataFrame({k: (cs == k).sum(axis=1) / valid for k in (0, 1, 2, 3)})
+        ret   = {}
+        for lab, d in (('1M', 21), ('3M', 63), ('6M', 126)):
+            ret[lab] = float(index.iloc[-1] / index.iloc[-1 - d] * 100 - 100) if len(index) > d else np.nan
+        out[sec] = {'index': index, 'phase': phase, 'mix': mix, 'n': len(cols), 'tickers': cols, 'ret': ret}
+    return out
+
+
+def compute_sector_trends(hist: dict, sectors: dict) -> dict:
+    close_df, code_df = build_trend_panels(hist)
+    return trends_from_panels(close_df, code_df, sectors)
+
+
+def sector_members(close_df: pd.DataFrame, code_df: pd.DataFrame, tickers: list,
+                   sector_index: pd.Series, days: int) -> pd.DataFrame:
+    """Per ticker van een sector: hoe goed volgt hij de sectortrend over de laatste `days` handelsdagen?
+    - Gelijkloop: correlatie van zijn dagrendement met de rest van de sector (zonder zichzelf)
+    - Rend.: koersverandering over de periode; Vs sector: verschil met de sectorindex (procentpunt)
+    - Trend-score 0–100: 50% gelijkloop + 50% positie in de rangorde van rendement binnen de sector."""
+    cols = [t for t in tickers if t in close_df.columns]
+    if not cols:
+        return pd.DataFrame()
+    win = close_df[cols].iloc[-(days + 1):]
+    ret = win / win.shift(1) - 1
+    ret = ret.iloc[1:]
+    tot, cnt = ret.sum(axis=1, skipna=True), ret.notna().sum(axis=1)
+    si = sector_index.iloc[-(days + 1):]
+    sec_ret = float(si.iloc[-1] / si.iloc[0] * 100 - 100) if len(si) > 1 else np.nan
+    rows = []
+    for t in cols:
+        r = ret[t]
+        if r.notna().sum() < 40:
+            continue
+        loo = (tot - r.fillna(0)) / (cnt - r.notna()).replace(0, np.nan)
+        corr = r.corr(loo, min_periods=40)
+        px = win[t].dropna()
+        if len(px) < 2:
+            continue
+        ph = code_df[t].dropna() if t in code_df.columns else pd.Series(dtype=float)
+        rows.append({'Ticker': t, 'corr': corr, 'ret': float(px.iloc[-1] / px.iloc[0] * 100 - 100),
+                     'phase': int(ph.iloc[-1]) if len(ph) else 0})
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    df['vs'] = df['ret'] - sec_ret
+    df['score'] = 100 * (0.5 * df['corr'].fillna(0).clip(0, 1) + 0.5 * df['ret'].rank(pct=True))
+    return df
+
+
+def _runs(codes) -> list:
+    """[(start, einde, code)] van opeenvolgende dagen met dezelfde fase."""
+    vals = [0 if pd.isna(x) else int(x) for x in codes]
+    runs, start = [], 0
+    for i in range(1, len(vals) + 1):
+        if i == len(vals) or vals[i] != vals[start]:
+            runs.append((start, i - 1, vals[start]))
+            start = i
+    return runs
+
+
+def _now_phase(tr: dict) -> int:
+    p = tr['phase'].dropna()
+    return int(p.iloc[-1]) if len(p) else 0
+
+
+def _pct_html(v) -> str:
+    if v is None or (isinstance(v, float) and np.isnan(v)):
+        return '<b>–</b>'
+    return f'<b class="{"up" if v >= 0 else "dn"}">{v:+.1f}%</b>'
+
+
+def _trend_svg(index: pd.Series, phase: pd.Series, mix: pd.DataFrame, w: int = 360) -> str:
+    """Trendlijn gekleurd per fase + gekleurde fase-achtergrond + verdeling van tickers per fase."""
+    n = len(index)
+    if n < 5:
+        return ''
+    padL, padR, top, ht, gap, hb = 6, 40, 8, 120, 22, 44
+    pw, by0 = w - padL - padR, top + ht + gap
+    H = by0 + hb + 16
+    x = lambda i: padL + i * pw / (n - 1)
+    v = (index / index.iloc[0] * 100).tolist()
+    lo, hi = min(v), max(v)
+    pad = (hi - lo) * 0.08 or 1.0
+    lo, hi = lo - pad, hi + pad
+    y = lambda val: top + ht - (val - lo) / (hi - lo) * ht
+    runs = _runs(phase.tolist())
+    P = []
+    for s, e, c in runs:                                           # fase-achtergrond
+        if c:
+            x0, x1 = x(s), x(min(e + 1, n - 1))
+            P.append(f'<rect x="{x0:.1f}" y="{top}" width="{max(x1 - x0, 1):.1f}" height="{ht}" '
+                     f'fill="{PHASE_COLORS[c]}" opacity=".13"/>')
+    if lo < 100 < hi:
+        P.append(f'<line x1="{padL}" x2="{w - padR}" y1="{y(100):.1f}" y2="{y(100):.1f}" '
+                 f'stroke="#848E9C" stroke-width=".8" stroke-dasharray="3 3" opacity=".6"/>')
+    for s, e, c in runs:                                           # lijn per fase
+        pts = ' '.join(f'{x(i):.1f},{y(v[i]):.1f}' for i in range(s, min(e + 2, n)))
+        P.append(f'<polyline points="{pts}" fill="none" stroke="{PHASE_COLORS[c]}" stroke-width="2" '
+                 f'stroke-linejoin="round" stroke-linecap="round"/>')
+    for s, e, c in runs:                                           # instap in bodem / herstel
+        if c in (1, 2) and e - s >= 1:
+            P.append(f'<circle cx="{x(s):.1f}" cy="{y(v[s]):.1f}" r="3.2" fill="{PHASE_COLORS[c]}" '
+                     f'stroke="#0B0E11" stroke-width="1.2"/>')
+    lc = PHASE_COLORS[runs[-1][2]]
+    P.append(f'<circle cx="{x(n - 1):.1f}" cy="{y(v[-1]):.1f}" r="3.4" fill="{lc}"/>')
+    P.append(f'<text x="{x(n - 1) + 6:.1f}" y="{y(v[-1]) + 3:.1f}" font-size="9.5" fill="#E8ECEF" '
+             f'font-weight="600">{v[-1]:.0f}</text>')
+    P.append(f'<text x="{padL}" y="{top + 9}" font-size="8.5" fill="#848E9C">{hi - pad:.0f}</text>')
+    P.append(f'<text x="{padL}" y="{top + ht - 3}" font-size="8.5" fill="#848E9C">{lo + pad:.0f}</text>')
+
+    m = mix.reindex(index.index).fillna(0.0)                       # verdeling tickers per fase (gestapeld)
+    tot = (m[1] + m[2] + m[3])
+    smax = min(1.0, max(0.3, float(tot.max()) * 1.1))
+    yb = lambda s: by0 + hb - s / smax * hb
+    base = [0.0] * n
+    for k in (3, 2, 1):
+        up = [base[i] + float(m[k].iloc[i]) for i in range(n)]
+        fwd = ' '.join(f'{x(i):.1f},{yb(up[i]):.1f}' for i in range(n))
+        bwd = ' '.join(f'{x(i):.1f},{yb(base[i]):.1f}' for i in range(n - 1, -1, -1))
+        P.append(f'<polygon points="{fwd} {bwd}" fill="{PHASE_COLORS[k]}" opacity=".85"/>')
+        base = up
+    P.append(f'<line x1="{padL}" x2="{w - padR}" y1="{by0 + hb}" y2="{by0 + hb}" stroke="#2B3139" stroke-width="1"/>')
+    P.append(f'<text x="{padL}" y="{by0 - 7}" font-size="8.5" fill="#848E9C">Tickers per fase (max {smax * 100:.0f}%)</text>')
+
+    months = [(i, d) for i, d in enumerate(index.index) if i == 0 or d.month != index.index[i - 1].month]
+    step = max(1, int(np.ceil(len(months) / 6)))
+    for j, (i, d) in enumerate(months):
+        if j % step == 0 and padL + 10 < x(i) < w - padR - 8:
+            P.append(f'<text x="{x(i):.1f}" y="{by0 + hb + 12}" font-size="8.5" fill="#848E9C" '
+                     f'text-anchor="middle">{_MONTHS_NL[d.month - 1]}</text>')
+    return f'<svg viewBox="0 0 {w} {H}" preserveAspectRatio="xMidYMid meet" role="img">{"".join(P)}</svg>'
+
+
+def _trend_spark(index: pd.Series, phase: pd.Series, w: int = 72, h: int = 24) -> str:
+    n = len(index)
+    if n < 5:
+        return ''
+    v = index.tolist()
+    lo, hi = min(v), max(v)
+    span = (hi - lo) or 1.0
+    xs = lambda i: 2 + i * (w - 4) / (n - 1)
+    ys = lambda val: h - 2 - (val - lo) / span * (h - 4)
+    lines = []
+    for s, e, c in _runs(phase.tolist()):
+        pts = ' '.join(f'{xs(i):.1f},{ys(v[i]):.1f}' for i in range(s, min(e + 2, n)))
+        lines.append(f'<polyline points="{pts}" fill="none" stroke="{PHASE_COLORS[c]}" stroke-width="1.7" '
+                     f'stroke-linejoin="round" stroke-linecap="round"/>')
+    return f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}">{"".join(lines)}</svg>'
+
+
+def _phase_pill(code: int) -> str:
+    return (f'<span class="qe-ph" style="background:{PHASE_COLORS[code]}">'
+            f'{PHASE_ICONS[code]} {PHASE_NAMES[code]}</span>')
+
+
+def render_sector_trend_card(name: str, tr: dict, days: int) -> str:
+    idx, ph, mix = tr['index'].iloc[-days:], tr['phase'].iloc[-days:], tr['mix'].iloc[-days:]
+    now = _now_phase(tr)
+    last = mix.iloc[-1] if len(mix) else None
+    legend = ''.join(
+        f'<span><i style="background:{PHASE_COLORS[k]}"></i>{PHASE_ICONS[k]} {PHASE_NAMES[k]}'
+        + (f' <b>{last[k] * 100:.0f}%</b>' if last is not None and not pd.isna(last[k]) else '') + '</span>'
+        for k in (1, 2, 3, 0))
+    rets = ''.join(f'<span>{lab} {_pct_html(tr["ret"].get(lab))}</span>' for lab in ('1M', '3M', '6M'))
+    return (f'<div class="qe-trend"><div class="t-h"><span class="t-n">{SECTOR_ICON.get(name, "▫")} {_esc(name)}'
+            f' <span class="t-c">{tr["n"]} tickers</span></span>{_phase_pill(now)}</div>'
+            f'<div class="t-r">{rets}</div>{_trend_svg(idx, ph, mix)}<div class="t-lg">{legend}</div></div>')
+
+
+TREND_SORTS = {"Trend-score": "score", "Gelijkloop": "corr", "Rend. vs sector": "vs"}
+
+
+def render_sector_members(df: pd.DataFrame, name: str, sort_col: str = "score", top: int = 10) -> str:
+    """Lijst tickers van één sector, gerangschikt op hoe goed ze de sectortrend volgen."""
+    if df is None or df.empty:
+        return ''
+    d = df.sort_values(sort_col, ascending=False, na_position='last')
+    shown = d.head(top) if top else d
+    rows = []
+    for rank, (_, r) in enumerate(shown.iterrows(), 1):
+        corr = '–' if pd.isna(r['corr']) else f'{r["corr"] * 100:.0f}%'
+        rows.append(
+            f'<div class="qe-tr-row mem"><span class="n">{rank}</span>'
+            f'<span class="t">{_esc(str(r["Ticker"]))}<small>{PHASE_ICONS[int(r["phase"])]} {PHASE_NAMES[int(r["phase"])]}</small></span>'
+            f'<span class="v"><b>{corr}</b></span><span class="v">{_pct_html(r["ret"])}</span>'
+            f'<span class="v">{_pct_html(r["vs"])}</span></div>')
+    head = ('<div class="qe-tr-row mem hd"><span></span><span class="t">Ticker · fase nu</span>'
+            '<span class="v">Gelijk</span><span class="v">Rend.</span><span class="v">Vs sector</span></div>')
+    more = f' · top {len(shown)} van {len(d)}' if len(shown) < len(d) else f' · {len(d)} tickers'
+    return (f'<div class="qe-panel"><div class="p-t">🎯 {SECTOR_ICON.get(name, "")} {_esc(name)}: volgt de trend{more}</div>'
+            f'{head}{"".join(rows)}</div>')
+
+
+def sector_turnarounds(trends: dict, lookback: int = 15) -> list:
+    """Sectoren die kort geleden in Bodemfase zaten en nu omhoog komen (Herstel/Uptrend)."""
+    res = []
+    for sec, tr in trends.items():
+        ph = tr['phase'].dropna()
+        if len(ph) > lookback and int(ph.iloc[-1]) in (2, 3) and (ph.iloc[-lookback - 1:-1] == 1).any():
+            res.append(sec)
+    return res
+
+
+def render_sector_trend_rank(trends: dict, days: int, selected: str = None) -> str:
+    rows = []
+    for sec, tr in sorted(trends.items(), key=lambda kv: -(kv[1]['ret'].get('3M') if not pd.isna(kv[1]['ret'].get('3M')) else -999)):
+        now = _now_phase(tr)
+        rows.append(
+            f'<div class="qe-tr-row{" sel" if sec == selected else ""}"><span class="n">{SECTOR_ICON.get(sec, "▫")}</span>'
+            f'<span class="t">{_esc(sec)}<small>{PHASE_ICONS[now]} {PHASE_NAMES[now]}</small></span>'
+            f'{_trend_spark(tr["index"].iloc[-days:], tr["phase"].iloc[-days:])}'
+            f'<span class="v">{_pct_html(tr["ret"].get("1M"))}</span><span class="v">{_pct_html(tr["ret"].get("3M"))}</span></div>')
+    head = ('<div class="qe-tr-row hd"><span></span><span class="t">Sector · fase nu</span><span>Verloop</span>'
+            '<span class="v">1M</span><span class="v">3M</span></div>')
+    return f'<div class="qe-panel"><div class="p-t">🌐 Sectoren op trend (sterkste 3M bovenaan)</div>{head}{"".join(rows)}</div>'
+
+
+@st.cache_data(ttl=3600, max_entries=1500, show_spinner=False)
+def _trend_history(ticker: str) -> pd.DataFrame:
+    """1 jaar dagkoersen (alleen Open/Low/Close, licht). Gecachet 1 uur over sessies heen, zodat een
+    onderbroken laadbeurt (telefoon in de zak) de volgende keer gewoon verder gaat. Fout = niet gecachet."""
+    return _fetch_history(ticker, TREND_PERIOD, 60)[['Open', 'Low', 'Close']].astype('float32')
+
+
+def _load_trend_memo(tickers: tuple, big: bool) -> dict:
+    prog = st.progress(0.0, text="Koershistorie laden…")
+    hist, total, chunk = {}, len(tickers), 60
+    for i in range(0, total, chunk):
+        part = tickers[i:i + chunk]
+        res = _parallel_map(_trend_history, part, workers=MAIN_TABLE_WORKERS,
+                            on_progress=lambda d, n, i=i: prog.progress(
+                                min((i + d) / total, 1.0), text=f"Koershistorie laden… {min(i + d, total)}/{total} · {len(hist)} gelukt"))
+        hist.update({t: r for t, r in res.items() if isinstance(r, pd.DataFrame)})
+    try:
+        prog.empty()
+    except Exception:
+        pass
+    with st.spinner("Sectoren en trends berekenen…"):
+        sm = sector_map(list(hist), lookup=not big)               # grote pool: geen Yahoo-opzoeking per ticker
+        close_df, code_df = build_trend_panels(hist)
+        trends = trends_from_panels(close_df, code_df, sm)
+    return {'sig': tickers, 'trends': trends, 'close': close_df, 'codes': code_df, 'ok': len(hist), 'all': total,
+            'nosec': sum(1 for t in hist if sm.get(t, 'Onbekend') == 'Onbekend'), 'ts': time.time()}
+
+
+def sector_trend_section(own_tickers) -> None:
+    """Sector-trend over 1 jaar historie, met de tickers per sector die de trend het best volgen.
+    Bron: eigen Markt-lijst (laadt direct) of de grote pool (laadt op verzoek; duurt een paar minuten)."""
+    try:
+        src = st.pills("Bron", ["Mijn lijst", "Grote pool"], default="Mijn lijst", key="trend_src",
+                       label_visibility="collapsed")
+    except Exception:
+        src = st.radio("Bron", ["Mijn lijst", "Grote pool"], horizontal=True, key="trend_src_r",
+                       label_visibility="collapsed")
+    big = (src == "Grote pool")
+    memos = st.session_state.setdefault('_sector_trends', {})
+    if big:
+        try:
+            tickers = tuple(get_large_ticker_pool()[0])
+        except Exception as e:
+            st.warning(f"Grote pool kon niet worden geladen: {e}")
+            return
+    else:
+        tickers = tuple(dict.fromkeys(str(t) for t in own_tickers))
+    memo = memos.get(src)
+    if memo and (memo['sig'] != tickers or (not big and time.time() - memo['ts'] > 900)):
+        memo = None
+    if memo is None:
+        if big:
+            st.markdown(f'<div class="qe-hint">🌐 {len(tickers)} tickers · laden duurt ongeveer {max(1, round(len(tickers) / 6 * 0.5 / 60))}–'
+                        f'{max(2, round(len(tickers) / 6 * 1.0 / 60))} minuten. Houd de app open; onderbroken? Tik opnieuw, '
+                        f'dan gaat hij verder waar hij was.</div>', unsafe_allow_html=True)
+            if not st.button("▶ Laad sector-trend voor de grote pool", key="btn_trend_big", type="primary"):
+                return
+        memo = _load_trend_memo(tickers, big)
+        memos[src] = memo
+    trends = memo['trends']
+    if not trends:
+        st.warning("Geen sector-historie beschikbaar (Yahoo gaf geen koersdata). Probeer het over een minuut opnieuw.")
+        return
+    if big and st.button("↻ Opnieuw laden", key="btn_trend_reload"):
+        memos.pop(src, None)
+        st.rerun()
+
+    try:
+        per = st.pills("Periode", list(TREND_WINDOWS), default="6M", key="trend_period", label_visibility="collapsed")
+    except Exception:
+        per = st.radio("Periode", list(TREND_WINDOWS), index=1, horizontal=True, key="trend_period_r",
+                       label_visibility="collapsed")
+    days = TREND_WINDOWS.get(per or "6M", 126)
+
+    turn = sector_turnarounds(trends)
+    if turn:
+        st.markdown('<div class="qe-hint">🌱 Op weg omhoog (kort geleden Bodemfase): ' +
+                    ' · '.join(f'<b>{SECTOR_ICON.get(s, "")} {_esc(s)}</b>' for s in turn) + '</div>',
+                    unsafe_allow_html=True)
+
+    r3 = lambda s: (-999 if pd.isna(trends[s]['ret'].get('3M')) else trends[s]['ret']['3M'])
+    names = sorted(trends, key=lambda s: -trends[s]['n'])
+    if st.session_state.get('trend_sector') not in names:
+        st.session_state['trend_sector'] = max(names, key=r3)
+    try:
+        sel = st.pills("Sector", names, key="trend_sector", label_visibility="collapsed")
+    except Exception:
+        sel = st.selectbox("Sector", names, key="trend_sector_s", label_visibility="collapsed")
+    sel = sel if sel in trends else names[0]
+
+    st.markdown(render_sector_trend_card(sel, trends[sel], days), unsafe_allow_html=True)
+
+    mem = sector_members(memo['close'], memo['codes'], trends[sel]['tickers'], trends[sel]['index'], days)
+    if not mem.empty:
+        try:
+            srt = st.pills("Sorteer", list(TREND_SORTS), default="Trend-score", key="trend_sort",
+                           label_visibility="collapsed")
+        except Exception:
+            srt = st.radio("Sorteer", list(TREND_SORTS), horizontal=True, key="trend_sort_r",
+                           label_visibility="collapsed")
+        show_all = st.toggle("Toon alle tickers van deze sector", key="trend_all") if len(mem) > 10 else False
+        st.markdown(render_sector_members(mem, sel, TREND_SORTS.get(srt or "Trend-score", "score"),
+                                          0 if show_all else 10), unsafe_allow_html=True)
+
+    st.markdown(render_sector_trend_rank(trends, days, sel), unsafe_allow_html=True)
+    extra = f" · {memo['nosec']} zonder bekende sector overgeslagen" if memo.get('nosec') else ""
+    st.caption(f"Gelijk gewogen index van {memo['ok']} van {memo['all']} tickers{extra}. Fases volgens de scanner-regels op "
+               "dagdata; Vroeg Herstel is benaderd (groene kaars die de rode dag ervoor terugwint). "
+               "Gelijkloop = correlatie van het dagrendement met de rest van de sector; Trend-score = 50% gelijkloop + 50% rendement-rang.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -4354,6 +4797,12 @@ with main_tabs[0]:
         ]), unsafe_allow_html=True)
 
         st.markdown(render_breadth(main_df), unsafe_allow_html=True)
+
+        # ── Sector-trend (historie) ───────────────────────────────────────────
+        if st.toggle("🌐 Sector-trend (historie)", key="show_sector_trend",
+                     help="Trend per sector over de laatste maanden met de scanner-fases ingetekend, plus de tickers die de "
+                          "sectortrend het best volgen. Bron: je eigen lijst of de grote pool (laadt op verzoek)."):
+            sector_trend_section(main_df['Ticker'].tolist())
 
         # ── Filter · zoek · sorteer ───────────────────────────────────────────
         try:
