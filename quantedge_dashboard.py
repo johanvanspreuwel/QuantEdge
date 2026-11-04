@@ -156,7 +156,7 @@ st.set_page_config(
 # ─────────────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap');
 
   :root {
     color-scheme: dark;
@@ -182,11 +182,16 @@ st.markdown("""
   html, body, [data-testid="stApp"] {
     background-color: var(--bg-primary) !important;
     color: var(--text-primary) !important;
-    font-family: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    background-image: radial-gradient(900px 420px at 8% -8%, rgba(240,185,11,.07), transparent 60%),
+                      radial-gradient(700px 380px at 100% 0%, rgba(33,150,243,.05), transparent 60%) !important;
+    background-attachment: fixed !important;
   }
   * { -webkit-tap-highlight-color: transparent; }
-  h1, h2, h3, h4, h5 { color: var(--gold) !important; font-family: 'JetBrains Mono', monospace; letter-spacing: -0.2px; }
-  h3 { font-size: 1.25rem !important; margin-bottom: .2rem !important; }
+  h1, h2, h3, h4, h5 { color: #F4F6F8 !important; font-family: 'Inter', sans-serif !important; font-weight: 700 !important; letter-spacing: -0.3px; }
+  h3 { font-size: 1.3rem !important; margin-bottom: .2rem !important; }
+  h3::before { content: ''; display: inline-block; width: 4px; height: 1.05em; margin-right: 10px; vertical-align: -0.15em;
+               border-radius: 2px; background: linear-gradient(180deg, var(--gold), var(--gold-dim)); }
 
   [data-testid="stHeader"] { background: rgba(11,14,17,.88) !important; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
   [data-testid="stToolbarActions"], [data-testid="stDecoration"], footer { display: none !important; }
@@ -203,21 +208,25 @@ st.markdown("""
 
   /* ── Knoppen ───────────────────────────────────────────────────────────── */
   .stButton > button, .stDownloadButton > button {
-    background: linear-gradient(135deg, var(--bg-card), var(--bg-hover));
-    color: var(--gold) !important;
-    border: 1px solid var(--gold) !important;
-    border-radius: 10px;
-    min-height: 44px;
-    font-family: 'JetBrains Mono', monospace;
+    background: rgba(255,255,255,.04);
+    color: var(--text-primary) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 12px;
+    min-height: 46px;
     font-weight: 600;
-    letter-spacing: .3px;
-    transition: transform .12s ease, box-shadow .2s ease, background .2s ease;
+    transition: transform .12s ease, box-shadow .2s ease, background .2s ease, border-color .2s ease;
   }
-  .stButton > button:active { transform: scale(.97); background: var(--gold-dim) !important; color: #000 !important; }
+  .stButton > button:active { transform: scale(.97); }
+  .stButton > button[kind="primary"] {
+    background: linear-gradient(135deg, var(--gold), #D9A400);
+    color: #121212 !important; border-color: var(--gold) !important;
+    box-shadow: 0 4px 16px rgba(240,185,11,.25);
+  }
   @media (hover: hover) {
-    .stButton > button:hover { background: linear-gradient(135deg, var(--gold-dim), var(--gold)) !important;
-                               color: #000 !important; box-shadow: 0 4px 15px rgba(240,185,11,.3); }
+    .stButton > button:hover { border-color: var(--gold) !important; box-shadow: 0 4px 15px rgba(240,185,11,.18); }
+    .stButton > button[kind="primary"]:hover { filter: brightness(1.08); }
   }
+  button[kind="pillsActive"] { background: rgba(240,185,11,.16) !important; border-color: var(--gold) !important; color: var(--gold) !important; }
 
   /* ── Tabs: horizontaal scrollbaar, grote tikvlakken ────────────────────── */
   .stTabs [data-baseweb="tab-list"] { background-color: var(--bg-secondary); border-bottom: 2px solid var(--gold);
@@ -268,8 +277,8 @@ st.markdown("""
   /* ── KPI-tegels ────────────────────────────────────────────────────────── */
   .qe-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 6px 0 12px; }
   .qe-kpis.n6 { grid-template-columns: repeat(6, 1fr); }
-  .qe-kpi  { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius);
-             padding: 10px 12px; border-left: 3px solid var(--gold); }
+  .qe-kpi  { background: linear-gradient(180deg, #181D25, #13171C); border: 1px solid rgba(255,255,255,.06); border-radius: 16px;
+             padding: 12px 14px; border-left: 3px solid var(--gold); box-shadow: 0 4px 14px rgba(0,0,0,.25); }
   .qe-kpi .k-l { font-size: .7rem; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .qe-kpi .k-v { font-family: 'JetBrains Mono', monospace; font-size: 1.5rem; font-weight: 700; color: var(--gold); line-height: 1.2; }
   .qe-kpi.g { border-left-color: var(--green); } .qe-kpi.g .k-v { color: var(--green); }
@@ -278,10 +287,10 @@ st.markdown("""
   /* ── Ticker-kaarten (tik = uitklappen, geen herlaadactie nodig) ────────── */
   .qe-list { display: flex; flex-direction: column; gap: 8px; animation: qe-fade .25s ease-out; }
   @keyframes qe-fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
-  .qe-card { background: var(--bg-secondary); border: 1px solid var(--border); border-left: 4px solid var(--border);
-             border-radius: var(--radius); overflow: hidden; }
-  .qe-card.t-g { border-left-color: var(--green); background: linear-gradient(90deg, rgba(0,200,83,.07), var(--bg-secondary) 40%); }
-  .qe-card.t-y { border-left-color: var(--gold);  background: linear-gradient(90deg, rgba(240,185,11,.07), var(--bg-secondary) 40%); }
+  .qe-card { background: linear-gradient(180deg, #181D25, #13171C); border: 1px solid rgba(255,255,255,.06); border-left: 4px solid var(--border);
+             border-radius: 16px; overflow: hidden; box-shadow: 0 4px 14px rgba(0,0,0,.28); }
+  .qe-card.t-g { border-left-color: var(--green); background: linear-gradient(90deg, rgba(0,200,83,.10), #14181E 55%); box-shadow: 0 6px 20px rgba(0,200,83,.07); }
+  .qe-card.t-y { border-left-color: var(--gold);  background: linear-gradient(90deg, rgba(240,185,11,.10), #14181E 55%); box-shadow: 0 6px 20px rgba(240,185,11,.06); }
   .qe-card.t-r { border-left-color: var(--red); }
   .qe-card.t-x { border-left-color: var(--border); opacity: .6; }
   .qe-card > summary { list-style: none; cursor: pointer; padding: 10px 12px; min-height: 48px; }
@@ -290,7 +299,29 @@ st.markdown("""
   .qe-r1, .qe-r2 { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
   .qe-r2 { margin-top: 6px; }
   .qe-tk  { font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 1.05rem; color: var(--gold); }
-  .qe-px  { font-family: 'JetBrains Mono', monospace; font-size: 1rem; color: var(--text-primary); text-align: right; }
+  .qe-px  { font-family: 'JetBrains Mono', monospace; font-size: 1.1rem; font-weight: 600; color: #fff; text-align: right; font-variant-numeric: tabular-nums; }
+  .qe-sub { font-size: .7rem; color: var(--text-muted); margin-top: 1px; letter-spacing: .2px; }
+  .qe-pill { font-family: 'JetBrains Mono', monospace; font-size: .76rem; font-weight: 700; padding: 3px 9px; border-radius: 20px; white-space: nowrap; background: rgba(132,142,156,.14); color: var(--text-muted); }
+  .qe-pill.up { background: rgba(0,200,83,.16); color: #35E07F; } .qe-pill.dn { background: rgba(246,70,93,.16); color: #FF7185; }
+  .qe-bars { display: inline-flex; align-items: flex-end; gap: 3px; height: 26px; }
+  .qe-bars i { display: block; width: 8px; border-radius: 2px 2px 0 0; background: var(--gold); min-height: 3px; }
+  .qe-bars i.off { background: var(--bg-card); border: 1px solid var(--border); height: 3px !important; }
+  .qe-rank { display: grid; grid-template-columns: 22px 62px 1fr auto; gap: 8px; align-items: center; padding: 7px 0; border-bottom: 1px solid rgba(255,255,255,.05); }
+  .qe-rank:last-child { border-bottom: 0; }
+  .qe-rank .n { font-family: 'JetBrains Mono', monospace; color: var(--text-muted); font-size: .75rem; }
+  .qe-rank .t { font-family: 'JetBrains Mono', monospace; font-weight: 700; color: var(--gold); font-size: .9rem; }
+  .qe-rank .bar { height: 8px; border-radius: 6px; background: var(--bg-card); overflow: hidden; }
+  .qe-rank .bar i { display: block; height: 100%; border-radius: 6px; background: linear-gradient(90deg, var(--gold-dim), var(--gold)); }
+  .qe-rank .v { font-size: .7rem; color: var(--text-muted); white-space: nowrap; }
+  .qe-panel { background: var(--bg-secondary); border: 1px solid rgba(255,255,255,.06); border-radius: 16px; padding: 12px 14px; margin: 6px 0 12px; }
+  .qe-panel .p-t { font-size: .72rem; text-transform: uppercase; letter-spacing: .8px; color: var(--text-muted); margin-bottom: 6px; }
+  .qe-matrix { width: 100%; border-collapse: collapse; font-size: .8rem; }
+  .qe-matrix th { font-weight: 500; color: var(--text-muted); font-size: .72rem; padding: 4px 2px; text-align: center; }
+  .qe-matrix td { padding: 6px 2px; text-align: center; border-top: 1px solid rgba(255,255,255,.05); }
+  .qe-matrix td.tk { text-align: left; font-family: 'JetBrains Mono', monospace; font-weight: 700; color: var(--gold); }
+  .qe-matrix td.s { font-family: 'JetBrains Mono', monospace; color: var(--text-muted); font-size: .72rem; }
+  .qe-matrix .h { display: inline-block; width: 16px; height: 16px; border-radius: 5px; background: var(--bg-card); }
+  .qe-matrix .h.g { background: var(--green); } .qe-matrix .h.y { background: var(--gold); } .qe-matrix .h.o { background: #5B6573; }
   .qe-r1 { gap: 10px; }
   .qe-spark { flex: 0 0 auto; margin-left: auto; opacity: .95; }
   .qe-card[open] { border-color: var(--gold-dim); box-shadow: 0 0 0 1px rgba(240,185,11,.15); }
@@ -361,6 +392,25 @@ st.markdown("""
     [data-testid="stMetric"] { padding: 8px 10px; }
     [data-testid="stMetricValue"] { font-size: 1.3rem !important; }
     .stButton > button { width: 100%; }
+  }
+  @media (max-width: 640px) {
+    /* Hoofdtabs als onderbalk, zoals een echte app (verneste tabs in expanders blijven normaal) */
+    .block-container { padding-bottom: calc(6.5rem + env(safe-area-inset-bottom)) !important; }
+    .stTabs [data-baseweb="tab-list"] {
+      position: fixed; left: 0; right: 0; bottom: 0; z-index: 999; width: 100%;
+      background: rgba(15,18,23,.94); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+      border-top: 1px solid var(--border); border-bottom: 0; border-radius: 0; gap: 0;
+      padding: 0 64px calc(2px + env(safe-area-inset-bottom)) 4px; justify-content: space-around;
+    }
+    .stTabs [data-baseweb="tab"] { flex: 1 1 0; min-width: 0; justify-content: center; padding: 0 2px !important; font-size: .68rem !important; min-height: 54px; }
+    .stTabs [data-baseweb="tab"] p { font-size: .68rem !important; }
+    .stTabs [data-baseweb="tab-highlight"] { top: 0 !important; bottom: auto !important; height: 3px !important; border-radius: 0 0 3px 3px; }
+    .stTabs [data-baseweb="tab-border"] { display: none; }
+    [data-testid="stExpander"] .stTabs [data-baseweb="tab-list"] {
+      position: static; background: var(--bg-secondary); backdrop-filter: none; border-top: 0;
+      border-bottom: 1px solid var(--border); padding: 0; justify-content: flex-start; overflow-x: auto; }
+    [data-testid="stExpander"] .stTabs [data-baseweb="tab"] { flex: 0 0 auto; min-height: 44px; padding: 0 12px !important; }
+    [data-testid="stExpander"] .stTabs [data-baseweb="tab-highlight"] { top: auto !important; bottom: 0 !important; }
   }
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation: none !important; transition: none !important; }
@@ -1847,6 +1897,12 @@ def render_breadth(df: pd.DataFrame) -> str:
             f'<div class="b-mv"><span class="b-l">Flop</span>{mv(srt.tail(3).iloc[::-1], "r")}</div></div>')
 
 
+def _phase_short(phase: str) -> str:
+    """'🚀 Sterke Uptrend (Uitbraak Bevestigd)' → 'Sterke Uptrend'"""
+    t = str(phase).split(' ', 1)[-1] if ' ' in str(phase) else str(phase)
+    return t.split('(')[0].strip()
+
+
 def render_ticker_cards(df: pd.DataFrame) -> str:
     """Compacte kaartenlijst. <details> klapt lokaal uit, dus zonder server-rerun."""
     if df is None or df.empty:
@@ -1892,13 +1948,14 @@ def render_ticker_cards(df: pd.DataFrame) -> str:
 
         parts.append(
             f'<details class="qe-card {tone}"><summary>'
-            f'<div class="qe-r1"><span class="qe-tk">{tk}</span>{_spark_svg(r.get("_spark"))}'
+            f'<div class="qe-r1"><div><div class="qe-tk">{tk}</div><div class="qe-sub">{_esc(_phase_short(phase))}</div></div>'
+            f'{_spark_svg(r.get("_spark"))}'
             f'<span class="qe-px">{_px_html(r.get("Koers", ""))}</span></div>'
             f'<div class="qe-r2"><div class="qe-chips">'
             f'<span class="qe-act {act_cls}">{_esc(action)}</span>'
             f'<span class="qe-chip {rsi_cls}">RSI <b>{_esc(str(r.get("RSI (14D)", "–")))}</b></span>'
             f'<span class="qe-chip {dev_cls}">Afw <b>{_esc(str(r.get("Afwijking %", "–")))}%</b></span>'
-            f'</div><span class="qe-chg {chg_cls}">{_esc(str(r.get("Dag %", "")))}</span></div>'
+            f'</div><span class="qe-pill {chg_cls}">{_esc(str(r.get("Dag %", "")))}</span></div>'
             f'</summary><div class="qe-body">{body}</div></details>'
         )
     parts.append('</div>')
@@ -3021,7 +3078,8 @@ def _compute_atr_rma(high, low, close, period=14):
     return atr
 
 
-def build_candlestick_chart(df: pd.DataFrame, ticker: str) -> go.Figure:
+def build_candlestick_chart(df: pd.DataFrame, ticker: str, show_bb: bool = True, show_reg: bool = True,
+                            show_atr: bool = True, show_bands: bool = False, compact: bool = False) -> go.Figure:
     """
     Bloomberg-stijl grafiek met:
     1. SMA 200 (oranje, solide, met as-label)
@@ -3061,18 +3119,15 @@ def build_candlestick_chart(df: pd.DataFrame, ticker: str) -> go.Figure:
     vol_colors = ['#00C853' if c >= o else '#F6465D'
                   for c, o in zip(close.values, open_.values)]
 
-    # ── 4 rijen: Prijs | Volume | RSI | ATR ──────────────────────────────────
+    # ── Rijen: Prijs | Volume | RSI | (ATR optioneel) ─────────────────────────
+    n_rows = 4 if show_atr else 3
+    _title = f'{ticker}  ·  SMA50/200' + ('  ·  BB' if show_bb else '') + ('  ·  Regressie' if show_reg else '')
     fig = make_subplots(
-        rows=4, cols=1,
+        rows=n_rows, cols=1,
         shared_xaxes=True,
-        row_heights=[0.52, 0.16, 0.16, 0.16],
+        row_heights=[0.52, 0.16, 0.16, 0.16] if show_atr else ([0.62, 0.16, 0.22] if compact else [0.60, 0.17, 0.23]),
         vertical_spacing=0.018,
-        subplot_titles=[
-            f'{ticker}  ·  SMA20/50/200  ·  BB  ·  Regressiekanaal',
-            'Volume',
-            'RSI (14D)',
-            'ATR (14 · RMA)'
-        ]
+        subplot_titles=[_title, 'Volume', 'RSI (14D)'] + (['ATR (14 · RMA)'] if show_atr else [])
     )
 
     # ── 2. SESSION BACKGROUND SHADING ────────────────────────────────────────
@@ -3088,7 +3143,7 @@ def build_candlestick_chart(df: pd.DataFrame, ticker: str) -> go.Figure:
     except Exception:
         is_daily = True
 
-    if is_daily and len(dates) >= 2:
+    if show_bands and is_daily and len(dates) >= 2:
         # Weekbanden: even weken lichtblauw, oneven weken lichtbruin
         week_starts = []
         current_week = None
@@ -3113,7 +3168,7 @@ def build_candlestick_chart(df: pd.DataFrame, ticker: str) -> go.Figure:
                 fill_col = 'rgba(90,60,20,0.10)'    # donkerbruin/amber
 
             # Voeg toe aan alle 4 panels
-            for row_n in [1, 2, 3, 4]:
+            for row_n in range(1, n_rows + 1):
                 fig.add_vrect(
                     x0=x0, x1=x1,
                     fillcolor=fill_col,
@@ -3131,39 +3186,41 @@ def build_candlestick_chart(df: pd.DataFrame, ticker: str) -> go.Figure:
     ), row=1, col=1)
 
     # ── REGRESSIEKANAAL ───────────────────────────────────────────────────────
-    fig.add_trace(go.Scatter(
-        x=dates, y=reg_line,
-        line=dict(color='#F0B90B', width=1.5, dash='dash'),
-        name='Regressie', hovertemplate='%{y:.2f}'
-    ), row=1, col=1)
-    fig.add_trace(go.Scatter(
-        x=dates, y=reg_line + 2*std_dev,
-        line=dict(color='#F0B90B', width=1, dash='dot'),
-        name='+2σ', hovertemplate='%{y:.2f}'
-    ), row=1, col=1)
-    fig.add_trace(go.Scatter(
-        x=dates, y=reg_line - 2*std_dev,
-        line=dict(color='#2196F3', width=1, dash='dot'),
-        name='-2σ', hovertemplate='%{y:.2f}',
-    ), row=1, col=1)
+    if show_reg:
+        fig.add_trace(go.Scatter(
+            x=dates, y=reg_line,
+            line=dict(color='#F0B90B', width=1.5, dash='dash'),
+            name='Regressie', hovertemplate='%{y:.2f}'
+        ), row=1, col=1)
+        fig.add_trace(go.Scatter(
+            x=dates, y=reg_line + 2*std_dev,
+            line=dict(color='#F0B90B', width=1, dash='dot'),
+            name='+2σ', hovertemplate='%{y:.2f}'
+        ), row=1, col=1)
+        fig.add_trace(go.Scatter(
+            x=dates, y=reg_line - 2*std_dev,
+            line=dict(color='#2196F3', width=1, dash='dot'),
+            name='-2σ', hovertemplate='%{y:.2f}',
+        ), row=1, col=1)
 
     # ── BOLLINGER BANDS ───────────────────────────────────────────────────────
-    fig.add_trace(go.Scatter(
-        x=dates, y=bb_upper,
-        line=dict(color='rgba(240,185,11,0.25)', width=1),
-        name='BB Upper', showlegend=False
-    ), row=1, col=1)
-    fig.add_trace(go.Scatter(
-        x=dates, y=bb_lower,
-        line=dict(color='rgba(33,150,243,0.25)', width=1),
-        name='BB Lower', fill='tonexty',
-        fillcolor='rgba(240,185,11,0.03)', showlegend=False
-    ), row=1, col=1)
-    fig.add_trace(go.Scatter(
-        x=dates, y=bb_mid,
-        line=dict(color='rgba(255,255,255,0.25)', width=1),
-        name='SMA 20', showlegend=False
-    ), row=1, col=1)
+    if show_bb:
+        fig.add_trace(go.Scatter(
+            x=dates, y=bb_upper,
+            line=dict(color='rgba(240,185,11,0.25)', width=1),
+            name='BB Upper', showlegend=False
+        ), row=1, col=1)
+        fig.add_trace(go.Scatter(
+            x=dates, y=bb_lower,
+            line=dict(color='rgba(33,150,243,0.25)', width=1),
+            name='BB Lower', fill='tonexty',
+            fillcolor='rgba(240,185,11,0.03)', showlegend=False
+        ), row=1, col=1)
+        fig.add_trace(go.Scatter(
+            x=dates, y=bb_mid,
+            line=dict(color='rgba(255,255,255,0.25)', width=1),
+            name='SMA 20', showlegend=False
+        ), row=1, col=1)
 
     # ── SMA 50 ────────────────────────────────────────────────────────────────
     if sma50.notna().sum() >= 10:
@@ -3272,27 +3329,29 @@ def build_candlestick_chart(df: pd.DataFrame, ticker: str) -> go.Figure:
                   fillcolor='rgba(156,39,176,0.04)', line_width=0, row=3, col=1)
 
     # ── 4. ATR(14) SUB-PANEL met RMA ─────────────────────────────────────────
-    last_atr = float(atr14.dropna().iloc[-1]) if atr14.notna().any() else 0.0
-    fig.add_trace(go.Scatter(
-        x=dates, y=atr14,
-        line=dict(color='#C62828', width=2),    # Solid Dark Red
-        name='ATR 14',
-        fill='tozeroy',
-        fillcolor='rgba(198,40,40,0.07)',
-        hovertemplate='ATR14: %{y:.4f}',
-    ), row=4, col=1)
+    last_atr = 0.0
+    if show_atr:
+        last_atr = float(atr14.dropna().iloc[-1]) if atr14.notna().any() else 0.0
+        fig.add_trace(go.Scatter(
+            x=dates, y=atr14,
+            line=dict(color='#C62828', width=2),    # Solid Dark Red
+            name='ATR 14',
+            fill='tozeroy',
+            fillcolor='rgba(198,40,40,0.07)',
+            hovertemplate='ATR14: %{y:.4f}',
+        ), row=4, col=1)
 
-    # ATR as-label rechts: rood badge met huidige waarde
-    fig.add_annotation(
-        x=1.0, y=last_atr,
-        xref='paper', yref='y4',
-        text=f"<b>ATR14  {last_atr:.3f}</b>",
-        showarrow=False,
-        font=dict(size=10, color='#C62828'),
-        bgcolor='rgba(11,14,17,0.85)',
-        bordercolor='#C62828', borderwidth=1,
-        xanchor='left', yanchor='middle',
-    )
+        # ATR as-label rechts: rood badge met huidige waarde
+        fig.add_annotation(
+            x=1.0, y=last_atr,
+            xref='paper', yref='y4',
+            text=f"<b>ATR14  {last_atr:.3f}</b>",
+            showarrow=False,
+            font=dict(size=10, color='#C62828'),
+            bgcolor='rgba(11,14,17,0.85)',
+            bordercolor='#C62828', borderwidth=1,
+            xanchor='left', yanchor='middle',
+        )
 
     # ── LAYOUT ────────────────────────────────────────────────────────────────
     fig.update_layout(
@@ -3307,7 +3366,7 @@ def build_candlestick_chart(df: pd.DataFrame, ticker: str) -> go.Figure:
             orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1,
         ),
         margin=dict(l=10, r=80, t=40, b=10),
-        height=860,
+        height=860 if show_atr else 740,
         hovermode='x unified',
         hoverlabel=dict(
             bgcolor='#13171C',
@@ -3330,10 +3389,10 @@ def build_candlestick_chart(df: pd.DataFrame, ticker: str) -> go.Figure:
     )
 
     # ── ASSEN — crosshair + zoom op alle panels ───────────────────────────────
-    for r in [1, 2, 3, 4]:
+    for r in range(1, n_rows + 1):
         fig.update_xaxes(
             row=r, col=1,
-            gridcolor='#2B3139',
+            gridcolor='#1C222A',
             zeroline=False,
             showgrid=True,
             tickfont=dict(color='#848E9C'),
@@ -3349,7 +3408,7 @@ def build_candlestick_chart(df: pd.DataFrame, ticker: str) -> go.Figure:
         )
         fig.update_yaxes(
             row=r, col=1,
-            gridcolor='#2B3139',
+            gridcolor='#1C222A',
             zeroline=False,
             showgrid=True,
             tickfont=dict(color='#848E9C'),
@@ -3369,7 +3428,18 @@ def build_candlestick_chart(df: pd.DataFrame, ticker: str) -> go.Figure:
     fig.update_yaxes(title_text="Prijs",   row=1, col=1, title_font=dict(color='#F0B90B'))
     fig.update_yaxes(title_text="Volume",  row=2, col=1, title_font=dict(color='#F0B90B'))
     fig.update_yaxes(title_text="RSI",     row=3, col=1, title_font=dict(color='#F0B90B'), range=[0,100])
-    fig.update_yaxes(title_text="ATR 14",  row=4, col=1, title_font=dict(color='#C62828'))
+    if show_atr:
+        fig.update_yaxes(title_text="ATR 14",  row=4, col=1, title_font=dict(color='#C62828'))
+
+    # Laatste koers als badge aan de rechterkant (zoals TradingView)
+    _chg_up = float(close.iloc[-1]) >= float(close.iloc[-2]) if len(close) >= 2 else True
+    _badge_col = '#00C853' if _chg_up else '#F6465D'
+    fig.add_annotation(
+        x=1.0, y=float(close.iloc[-1]), xref='paper', yref='y',
+        text=f"<b>{float(close.iloc[-1]):.2f}</b>", showarrow=False,
+        font=dict(size=11, color='#0B0E11'), bgcolor=_badge_col,
+        xanchor='left', yanchor='middle',
+    )
 
     return fig
 
@@ -3602,7 +3672,7 @@ def alpha_evaluate(hist: dict, cur: dict) -> pd.DataFrame:
             d['recs'].append((i, sn['ts'], it))
     rows = []
     n_snaps = len(snaps)
-    members = [{it['t'] for it in sn.get('top', [])} for sn in snaps]
+    score_maps = [{it['t']: it['score'] for it in sn.get('top', [])} for sn in snaps]
     for t, d in seen.items():
         recs = d['recs']
         first_i, first_ts, first_it = recs[0]
@@ -3629,7 +3699,7 @@ def alpha_evaluate(hist: dict, cur: dict) -> pd.DataFrame:
             '_symbol': _currency_symbol(t),
             '_in_latest': last_i == n_snaps - 1,
             '_spark': core.get('spark') if core else None,
-            '_dots': [t in m for m in members[-12:]],
+            '_scores': [m.get(t) for m in score_maps[-12:]],
         })
     df = pd.DataFrame(rows)
     if not df.empty:
@@ -3659,6 +3729,22 @@ def _fmt_pct(v) -> str:
     return '–' if pd.isna(v) else f"{v:+.1f}%"
 
 
+def render_alpha_leaderboard(df: pd.DataFrame, n: int = 5) -> str:
+    """Top-kandidaten: meest consistent in de top, daarna hoogste gemiddelde score."""
+    if df is None or df.empty:
+        return ''
+    top = df.sort_values(['Keer in top', 'Gem. score'], ascending=[False, False]).head(n)
+    rows = []
+    for i, (_, r) in enumerate(top.iterrows(), 1):
+        icon = ALPHA_STATUS[r['_status']][0].split(' ')[0]
+        rows.append(
+            f'<div class="qe-rank"><span class="n">{i}</span><span class="t">{_esc(str(r["Ticker"]))}</span>'
+            f'<div class="bar"><i style="width:{min(max(float(r["Gem. score"]), 3), 100):.0f}%"></i></div>'
+            f'<span class="v">{int(r["Keer in top"])}× · {r["Gem. score"]:.0f} {icon}</span></div>')
+    return ('<div class="qe-panel"><div class="p-t">🏅 Top kandidaten — vaakst in de top · gem. score</div>'
+            + ''.join(rows) + '</div>')
+
+
 def render_alpha_cards(df: pd.DataFrame) -> str:
     if df is None or df.empty:
         return '<div class="qe-empty">Geen tickers voor dit filter.</div>'
@@ -3682,10 +3768,13 @@ def render_alpha_cards(df: pd.DataFrame) -> str:
             + _field('Gem. / beste score', f"{r['Gem. score']:.0f} / {r['Beste score']:.0f}")
             + _field('Consistentie', f"{int(r['Keer in top'])} van {int(r['Van snapshots'])} scans")
         )
-        _dots = r.get('_dots')
-        if isinstance(_dots, list) and _dots:
-            body += _field_html(f'In de top (laatste {len(_dots)} scans)',
-                                '<span class="qe-dots">' + ''.join(f'<i class="{"on" if x else ""}"></i>' for x in _dots) + '</span>', True)
+        _sc = r.get('_scores')
+        if isinstance(_sc, list) and _sc:
+            _bars = ''.join(
+                f'<i style="height:{max(4, int(v / 100 * 26))}px" title="score {v:.0f}"></i>' if v is not None else '<i class="off"></i>'
+                for v in _sc)
+            body += _field_html(f'Score per scan (laatste {len(_sc)}; leeg = niet in de top)',
+                                f'<span class="qe-bars">{_bars}</span>', True)
         parts.append(
             f'<details class="qe-card {tone}"><summary>'
             f'<div class="qe-r1"><span class="qe-tk">{_esc(str(r["Ticker"]))}</span>'
@@ -3803,6 +3892,22 @@ def combo_filter_sort(df: pd.DataFrame, flt: str, query: str, sort: str) -> pd.D
     return out
 
 
+def render_combo_matrix(df: pd.DataFrame, keys: list, n: int = 12) -> str:
+    """Heatmap: welke scanner (kolom) vond welke ticker (rij)?"""
+    if df is None or df.empty or not keys:
+        return ''
+    head = ''.join(f'<th>{_esc(COMBO_LABELS.get(k, k).split(" ")[0])}</th>' for k in keys)
+    rows = []
+    for _, r in df.head(n).iterrows():
+        cells = ''
+        for k in keys:
+            cls = ('g' if k in COMBO_BODEM else 'y' if k in COMBO_UITBRAAK else 'o') if k in r['_hits'] else ''
+            cells += f'<td><span class="h {cls}"></span></td>'
+        rows.append(f'<tr><td class="tk">{_esc(str(r["Ticker"]))}</td>{cells}<td class="s">{int(r["Scanners"])}×</td></tr>')
+    return ('<div class="qe-panel"><div class="p-t">🧮 Samenloop-matrix — welke scanner vond welke ticker</div>'
+            f'<table class="qe-matrix"><tr><th></th>{head}<th></th></tr>{"".join(rows)}</table></div>')
+
+
 def render_combo_cards(df: pd.DataFrame) -> str:
     if df is None or df.empty:
         return '<div class="qe-empty">Geen tickers voor dit filter.</div>'
@@ -3840,12 +3945,12 @@ def render_combo_cards(df: pd.DataFrame) -> str:
 # MAIN NAVIGATION  (Watchlist-tab verwijderd – functionaliteit in Tab 1)
 # ─────────────────────────────────────────────────────────────────────────────
 main_tabs = st.tabs([
-    "📊 Market Tracker",
-    "🔍 Multi-Strategie Scanner",
-    "📈 Deep Dive & Grafiek",
-    "📡 Live Monitor",
-    "🏆 Alpha Tracker",
-    "🎯 Combi-Scan"])
+    "📊 Markt",
+    "🔍 Scanner",
+    "📈 Grafiek",
+    "📡 Live",
+    "🏆 Alpha",
+    "🎯 Combi"])
 
 # ═════════════════════════════════════════════════════════════════════════════
 # TAB 1: CORE MARKET TRACKER  (+ ingebouwde Watchlist)
@@ -4037,7 +4142,7 @@ with main_tabs[0]:
                 st.markdown("<div style='height:1.7rem'></div>", unsafe_allow_html=True)
                 if st.button("📈 Open Deep Dive", key="btn_open_deep_dive_main"):
                     st.session_state.current_alpha = selected_for_dive
-                    st.success(f"✅ {selected_for_dive} geladen → ga naar '📈 Deep Dive & Grafiek'")
+                    st.success(f"✅ {selected_for_dive} geladen → ga naar het tabblad '📈 Grafiek'")
 
     # ── WATCHLIST (ingebouwd in Tab 1 als expander) ───────────────────────────
     st.markdown("---")
@@ -4309,7 +4414,7 @@ with main_tabs[1]:
                 help="Uit = eigen tickers (snel). Aan = 1000+ tickers (langzaam)."
             )
 
-            if st.button("▶ Start Scan", key="btn_start_scan"):
+            if st.button("▶ Start Scan", key="btn_start_scan", type="primary"):
                 st.session_state['scan_running'] = True
                 try:
                     st.session_state['lm_active'] = False     # auto-refresh uit tijdens de scan
@@ -4373,7 +4478,7 @@ with main_tabs[1]:
                     st.markdown("<br>", unsafe_allow_html=True)
                     if st.button("📈 Open Deep Dive", key="btn_scan_to_deep_dive"):
                         st.session_state.current_alpha = selected_scan
-                        st.success(f"✅ {selected_scan} geladen → ga naar '📈 Deep Dive & Grafiek'")
+                        st.success(f"✅ {selected_scan} geladen → ga naar het tabblad '📈 Grafiek'")
                 with dd_sc3:
                     st.markdown("<br>", unsafe_allow_html=True)
                     if st.button("📌 Pin naar Live Monitor", key="btn_pin_from_scan"):
@@ -4611,7 +4716,20 @@ with main_tabs[2]:
 
         st.markdown("<br>", unsafe_allow_html=True)
 
-        fig = build_candlestick_chart(df_dd, active_ticker)
+        # ── Indicatoren: standaard een schone grafiek op de telefoon ─────────
+        _mob_dd = st.session_state.get('mobile_view', False)
+        _IND = ["Bollinger", "Regressiekanaal", "ATR", "Weekbanden"]
+        _ind_def = [] if _mob_dd else ["Bollinger", "Regressiekanaal", "ATR"]
+        _ind_key = "dd_ind_m" if _mob_dd else "dd_ind_d"
+        try:
+            _ind = st.pills("Indicatoren", _IND, selection_mode="multi", default=_ind_def, key=_ind_key)
+        except Exception:
+            _ind = st.multiselect("Indicatoren", _IND, default=_ind_def, key=_ind_key + "_ms")
+        _ind = _ind or []
+        fig = build_candlestick_chart(
+            df_dd, active_ticker,
+            show_bb="Bollinger" in _ind, show_reg="Regressiekanaal" in _ind,
+            show_atr="ATR" in _ind, show_bands="Weekbanden" in _ind, compact=_mob_dd)
 
         # ── TradingView-stijl interactie ──────────────────────────────────────
         # Scrollwiel = inzoomen, dubbelklik = reset, crosshair cursor
@@ -5029,7 +5147,7 @@ with main_tabs[4]:
         st.caption(f"{len(snaps)} snapshot(s) · laatste: {snaps[-1]['ts'].replace('T', ' ')} "
                    f"({snaps[-1].get('hits', '?')} hits van {snaps[-1].get('pool', '?')} tickers)")
 
-    if st.button("📸 Alpha Scan draaien & snapshot opslaan", key="btn_alpha_snapshot"):
+    if st.button("📸 Alpha Scan draaien & snapshot opslaan", key="btn_alpha_snapshot", type="primary"):
         st.session_state['scan_running'] = True
         try:
             st.session_state['lm_active'] = False
@@ -5088,6 +5206,8 @@ with main_tabs[4]:
             st.success("🚀 **Net omhoog sinds de laatste scan:** " + ", ".join(
                 f"{t} (was {ALPHA_STATUS.get(p, ('?',))[0]})" for t, p in moved))
 
+        st.markdown(render_alpha_leaderboard(df_all), unsafe_allow_html=True)
+
         ALPHA_FILTERS = ["Alles", "🚀 Omhoog", "🔎 In bodem", "🔴 Gebroken", "🏆 Meerdere keren"]
         try:
             a_flt = st.pills("Filter", ALPHA_FILTERS, default="Alles", key="alpha_filter",
@@ -5138,7 +5258,7 @@ with main_tabs[4]:
             with _p1:
                 if st.button("📈 Deep Dive", key="btn_alpha_dive"):
                     st.session_state.current_alpha = a_pick
-                    st.success(f"✅ {a_pick} geladen → ga naar '📈 Deep Dive & Grafiek'")
+                    st.success(f"✅ {a_pick} geladen → ga naar het tabblad '📈 Grafiek'")
             with _p2:
                 if st.button("📌 Live Monitor", key="btn_alpha_pin"):
                     if a_pick not in st.session_state['pinned_tickers']:
@@ -5205,7 +5325,7 @@ with main_tabs[5]:
     combo_large = st.toggle("🌐 Grote pool", value=False, key="combo_use_large",
                             help="Uit = jouw eigen tickers (snel). Aan = 1000+ tickers (langzaam).")
 
-    if st.button("▶ Combi-scan starten", key="btn_combo_run", disabled=not sel):
+    if st.button("▶ Combi-scan starten", key="btn_combo_run", disabled=not sel, type="primary"):
         st.session_state['scan_running'] = True
         try:
             st.session_state['lm_active'] = False
@@ -5268,6 +5388,8 @@ with main_tabs[5]:
             if len(c_view) != len(merged):
                 st.caption(f"{len(c_view)} van {len(merged)} tickers getoond")
 
+            st.markdown(render_combo_matrix(c_view, list(combo['dfs'].keys())), unsafe_allow_html=True)
+
             if st.session_state.get('mobile_view', False):
                 st.markdown(render_combo_cards(c_view), unsafe_allow_html=True)
             elif c_view.empty:
@@ -5288,7 +5410,7 @@ with main_tabs[5]:
                     with _q1:
                         if st.button("📈 Deep Dive", key="btn_combo_dive"):
                             st.session_state.current_alpha = c_pick
-                            st.success(f"✅ {c_pick} geladen → ga naar '📈 Deep Dive & Grafiek'")
+                            st.success(f"✅ {c_pick} geladen → ga naar het tabblad '📈 Grafiek'")
                     with _q2:
                         if st.button("📌 Live Monitor", key="btn_combo_pin"):
                             if c_pick not in st.session_state['pinned_tickers']:
