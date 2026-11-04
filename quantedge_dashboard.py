@@ -3977,20 +3977,53 @@ SECTOR_ICON = {
     'Materialen': '⛏', 'Vastgoed': '🏢', 'Communicatie': '📡', 'ETF / Fonds': '📦', 'Onbekend': '❔',
 }
 _S = {
-    'Technologie': "NVDA ASML.AS MSFT AMD ARM SAP CSCO MU TRMB INTU CRWD PANW CRM HPQ ENPH SEDG RUN",
-    'Financieel': "ADYEN.AS COIN PYPL MA V JPM",
-    'Consument cyclisch': "TSLA AMZN NKE SBUX MCD LOW MC.PA",
-    'Consument defensief': "KR PG PEP KO COST UNA.AS AD.AS OR.PA COTY WMT.DE",
-    'Communicatie': "NFLX DIS CMCSA",
-    'Gezondheidszorg': "ZTS JNJ ABBV PFE MRNA ILMN BAYN.DE",
-    'Materialen': "FMC ALB NEM GOLD FCX",
-    'Industrie': "CAT WM LMT RTX FDX UPS EME MAERSK-B.CO RHM.DE ADP SITE GEV PLUG",
-    'Vastgoed': "O ESRT",
+    'Technologie': "NVDA ASML.AS MSFT AMD ARM SAP CSCO MU TRMB INTU CRWD PANW CRM HPQ ENPH SEDG RUN BESI.AS SAP.DE IFX.DE DSY.PA ERIC-B.ST AAPL INTC QCOM TXN AVGO MRVL AMAT KLAC LRCX MCHP ADI NXPI ON SWKS MPWR FSLR",
+    'Financieel': "ADYEN.AS COIN PYPL MA V JPM ABN.AS INGA.AS MUV2.DE ALV.DE DBK.DE BNP.PA ACA.PA UBSG.SW HSBA.L LLOY.L SEB-A.ST ISP.MI UCG.MI BBVA.MC SAN.MC SAN.PA BAC GS MS WFC C BLK AXP COF USB PNC TFC SCHW ICE CME SPGI MCO FIS GPN",
+    'Consument cyclisch': "TSLA AMZN NKE SBUX MCD LOW MC.PA VOW3.DE BMW.DE ADS.DE ZAL.DE KER.PA RMS.PA ITX.MC RACE.MI HEIA.AS HD TGT",
+    'Consument defensief': "KR PG PEP KO COST UNA.AS AD.AS OR.PA COTY WMT.DE NESN.SW ULVR.L BATS.L DGE.L HEN3.DE WMT CL KMB GIS MDLZ PM MO SYY CAG CPB HSY MKC CHD CLX EL",
+    'Communicatie': "NFLX DIS CMCSA ORA.PA TEF.MC DTE.DE META GOOGL GOOG T VZ TMUS CHTR WBD FOX TTWO EA RBLX U",
+    'Gezondheidszorg': "ZTS JNJ ABBV PFE MRNA ILMN BAYN.DE PHIA.AS NOVN.SW NOVO-B.CO AZN.L GSK.L MRK.DE FRE.DE MRK BMY UNH CVS AMGN GILD REGN LLY TMO DHR ISRG SYK BSX MDT ABT VRTX BIIB BNTX INCY ALNY BEAM NTLA",
+    'Materialen': "FMC ALB NEM GOLD FCX BAS.DE LIN.DE AKZA.AS SGO.PA RIO.L WPM NUE STLD CLF AA MP SQM LAC",
+    'Industrie': "CAT WM LMT RTX FDX UPS EME MAERSK-B.CO RHM.DE ADP SITE GEV PLUG SIE.DE AIR.PA DG.PA ABBN.SW ZURN.SW VOLV-B.ST SAND.ST ATCO-A.ST RAND.AS WKL.AS IMCD.AS PRY.MI DE EMR RSG EXPN.L REL.L",
+    'Vastgoed': "O ESRT PLD SPG WELL AMT CCI EQIX DLR PSA EXR",
     'ETF / Fonds': "GLD SLV USO XLE VDE",
-    'Energie': "SHELL.AS XOM CVX COP EOG OXY FANG DVN HES MRO APA EQT CTRA SHEL BP TTE MPC VLO PSX OKE KMI WMB MPLX SLB HAL BKR",
-    'Nutsbedrijven': "CEG VST NEE DUK SO D AEP ED PCG SRE EIX ETR FE AES XEL BEP",
+    'Energie': "SHELL.AS ENI.MI REP.MC SHEL.L BP.L TTE.PA XOM CVX COP EOG OXY FANG DVN HES MRO APA EQT CTRA SHEL BP TTE MPC VLO PSX OKE KMI WMB MPLX SLB HAL BKR",
+    'Nutsbedrijven': "RWE.DE EOAN.DE ENEL.MI IBE.MC VIE.PA CEG VST NEE DUK SO D AEP ED PCG SRE EIX ETR FE AES XEL BEP",
 }
 SECTOR_SEED = {t: sec for sec, tickers in _S.items() for t in tickers.split()}
+
+
+GICS_NL = {
+    'Information Technology': 'Technologie', 'Health Care': 'Gezondheidszorg', 'Financials': 'Financieel',
+    'Consumer Discretionary': 'Consument cyclisch', 'Consumer Staples': 'Consument defensief',
+    'Energy': 'Energie', 'Utilities': 'Nutsbedrijven', 'Industrials': 'Industrie',
+    'Materials': 'Materialen', 'Real Estate': 'Vastgoed', 'Communication Services': 'Communicatie',
+}
+
+
+@st.cache_data(ttl=7 * 86400, show_spinner=False)
+def _wiki_sectors() -> dict:
+    """{ticker: sector} uit de Wikipedia-tabellen van S&P 500 en S&P 400 (GICS-sectoren, 1 request elk).
+    Leeg resultaat = exception, zodat een mislukte poging niet wordt gecachet."""
+    out = {}
+    for url in ('https://en.wikipedia.org/wiki/List_of_S%26P_500_companies',
+                'https://en.wikipedia.org/wiki/List_of_S%26P_400_companies'):
+        try:
+            for tbl in pd.read_html(url):
+                cols = {str(c).strip().lower(): c for c in tbl.columns}
+                sym = next((cols[k] for k in ('symbol', 'ticker symbol', 'ticker') if k in cols), None)
+                sec = next((c for k, c in cols.items() if 'sector' in k), None)
+                if sym is None or sec is None or len(tbl) < 100:
+                    continue
+                for t, g in zip(tbl[sym], tbl[sec]):
+                    if isinstance(t, str) and isinstance(g, str):
+                        out[t.strip().replace('.', '-').upper()] = GICS_NL.get(g.strip(), g.strip())
+                break
+        except Exception as e:
+            print(f"DEBUG WIKI SECTORS MISLUKT ({url}): {e}")
+    if not out:
+        raise ValueError("geen sectoren van Wikipedia")
+    return out
 
 
 @st.cache_data(ttl=7 * 86400, show_spinner=False)
@@ -4009,9 +4042,15 @@ def sector_map(tickers, max_lookups: int = 200) -> dict:
     """{ticker: sectornaam}. Eigen lijst eerst; de rest via Yahoo (parallel, eenmalig per sessie)."""
     out, todo = {}, []
     miss = st.session_state.setdefault('_sector_miss', set())
+    try:
+        wiki = _wiki_sectors()
+    except Exception:
+        wiki = {}
     for t in dict.fromkeys(str(x) for x in tickers):
         if t in SECTOR_SEED:
             out[t] = SECTOR_SEED[t]
+        elif t.upper() in wiki:
+            out[t] = wiki[t.upper()]
         elif t in miss:
             out[t] = 'Onbekend'
         else:
@@ -4019,7 +4058,7 @@ def sector_map(tickers, max_lookups: int = 200) -> dict:
     if todo:
         def _w(t):
             return _fetch_sector(t)
-        res = _parallel_map(_w, todo[:max_lookups], workers=4)
+        res = _parallel_map(_w, todo[:max_lookups], workers=3)
         for t in todo:
             r = res.get(t)
             if isinstance(r, str):
