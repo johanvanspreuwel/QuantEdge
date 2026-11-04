@@ -19,7 +19,26 @@ from datetime import datetime, timedelta
 import warnings
 import math
 import time
+import logging
+from html import escape as _esc
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 warnings.filterwarnings("ignore")
+
+# yfinance logt voor elke gedelisteerde/rate-limited ticker meerdere regels naar
+# de Streamlit-logs. De app vangt die gevallen zelf netjes af, dus dempen we ruis.
+logging.getLogger("yfinance").setLevel(logging.CRITICAL)
+
+try:
+    from yfinance.exceptions import YFRateLimitError
+except Exception:                                   # oudere yfinance-versies
+    class YFRateLimitError(Exception):
+        pass
+
+try:
+    from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
+except Exception:                                   # pragma: no cover
+    add_script_run_ctx = get_script_run_ctx = None
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CENTRALE CONSTANTEN  –  alle aanpasbare parameters op één plek
@@ -137,9 +156,10 @@ st.set_page_config(
 # ─────────────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600;700&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
 
   :root {
+    color-scheme: dark;
     --bg-primary:   #0B0E11;
     --bg-secondary: #13171C;
     --bg-card:      #1A1F27;
@@ -154,92 +174,201 @@ st.markdown("""
     --text-primary: #E8ECEF;
     --text-muted:   #848E9C;
     --border:       #2B3139;
+    --radius:       12px;
   }
 
+  /* ── Basis ─────────────────────────────────────────────────────────────── */
+  html { -webkit-text-size-adjust: 100%; }
   html, body, [data-testid="stApp"] {
     background-color: var(--bg-primary) !important;
     color: var(--text-primary) !important;
-    font-family: 'IBM Plex Sans', sans-serif;
+    font-family: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, sans-serif;
   }
+  * { -webkit-tap-highlight-color: transparent; }
+  h1, h2, h3, h4, h5 { color: var(--gold) !important; font-family: 'JetBrains Mono', monospace; letter-spacing: -0.2px; }
+  h3 { font-size: 1.25rem !important; margin-bottom: .2rem !important; }
 
-  h1, h2, h3, h4, h5 { color: var(--gold) !important; font-family: 'JetBrains Mono', monospace; }
-
+  [data-testid="stHeader"] { background: rgba(11,14,17,.88) !important; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+  [data-testid="stToolbarActions"], [data-testid="stDecoration"], footer { display: none !important; }
   [data-testid="stSidebar"] { background-color: var(--bg-secondary) !important; }
 
-  input, textarea, select { background-color: var(--bg-card) !important; color: var(--text-primary) !important; border: 1px solid var(--border) !important; }
-  .stTextInput > div > div { background-color: var(--bg-card) !important; }
-  .stSelectbox > div > div { background-color: var(--bg-card) !important; color: var(--text-primary) !important; }
+  .block-container { padding: 3.5rem 1.2rem calc(4rem + env(safe-area-inset-bottom)) !important; max-width: 1500px; }
 
-  .stButton > button {
+  /* ── Invoer ────────────────────────────────────────────────────────────── */
+  input, textarea, select { background-color: var(--bg-card) !important; color: var(--text-primary) !important;
+                            border: 1px solid var(--border) !important; border-radius: 10px !important; }
+  .stTextInput > div > div, .stSelectbox > div > div, .stTextArea > div > div { background-color: var(--bg-card) !important; border-radius: 10px !important; }
+  .stSelectbox > div > div { color: var(--text-primary) !important; min-height: 44px; }
+  input:focus, textarea:focus { border-color: var(--gold) !important; box-shadow: 0 0 0 1px var(--gold) !important; }
+
+  /* ── Knoppen ───────────────────────────────────────────────────────────── */
+  .stButton > button, .stDownloadButton > button {
     background: linear-gradient(135deg, var(--bg-card), var(--bg-hover));
     color: var(--gold) !important;
     border: 1px solid var(--gold) !important;
+    border-radius: 10px;
+    min-height: 44px;
     font-family: 'JetBrains Mono', monospace;
     font-weight: 600;
-    letter-spacing: 0.5px;
-    transition: all 0.2s ease;
+    letter-spacing: .3px;
+    transition: transform .12s ease, box-shadow .2s ease, background .2s ease;
   }
-  .stButton > button:hover {
-    background: linear-gradient(135deg, var(--gold-dim), var(--gold)) !important;
-    color: #000 !important;
-    transform: translateY(-1px);
-    box-shadow: 0 4px 15px rgba(240,185,11,0.3);
+  .stButton > button:active { transform: scale(.97); background: var(--gold-dim) !important; color: #000 !important; }
+  @media (hover: hover) {
+    .stButton > button:hover { background: linear-gradient(135deg, var(--gold-dim), var(--gold)) !important;
+                               color: #000 !important; box-shadow: 0 4px 15px rgba(240,185,11,.3); }
   }
 
-  .stTabs [data-baseweb="tab-list"] { background-color: var(--bg-secondary); border-bottom: 2px solid var(--gold); }
-  .stTabs [data-baseweb="tab"] { color: var(--text-muted) !important; font-family: 'JetBrains Mono', monospace; }
-  .stTabs [aria-selected="true"] { color: var(--gold) !important; border-bottom: 2px solid var(--gold) !important; }
+  /* ── Tabs: horizontaal scrollbaar, grote tikvlakken ────────────────────── */
+  .stTabs [data-baseweb="tab-list"] { background-color: var(--bg-secondary); border-bottom: 2px solid var(--gold);
+      overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; gap: 2px; border-radius: 10px 10px 0 0; }
+  .stTabs [data-baseweb="tab-list"]::-webkit-scrollbar { display: none; }
+  .stTabs [data-baseweb="tab"] { color: var(--text-muted) !important; font-family: 'JetBrains Mono', monospace;
+      white-space: nowrap; min-height: 46px; padding: 0 16px; font-size: .85rem; }
+  .stTabs [aria-selected="true"] { color: var(--gold) !important; }
+  .stTabs [data-baseweb="tab-highlight"] { background-color: var(--gold) !important; }
 
-  .stDataFrame { border: 1px solid var(--border) !important; }
+  .stDataFrame { border: 1px solid var(--border) !important; border-radius: 10px; overflow: hidden; }
 
-  [data-testid="stMetric"] { background-color: var(--bg-card); padding: 12px 16px; border-radius: 6px; border-left: 3px solid var(--gold); }
-  [data-testid="stMetricLabel"] { color: var(--text-muted) !important; font-size: 0.75rem !important; }
+  [data-testid="stMetric"] { background-color: var(--bg-card); padding: 12px 16px; border-radius: var(--radius); border-left: 3px solid var(--gold); }
+  [data-testid="stMetricLabel"] { color: var(--text-muted) !important; font-size: .75rem !important; }
   [data-testid="stMetricValue"] { color: var(--gold) !important; font-family: 'JetBrains Mono', monospace !important; }
 
-  .streamlit-expanderHeader { background-color: var(--bg-card) !important; color: var(--gold) !important; border: 1px solid var(--border) !important; }
-  .streamlit-expanderContent { background-color: var(--bg-secondary) !important; border: 1px solid var(--border) !important; }
-
-  hr { border-color: var(--border) !important; }
-
-  .stAlert { background-color: var(--bg-card) !important; border: 1px solid var(--border) !important; }
-  .stRadio > div { background-color: var(--bg-card); padding: 8px 12px; border-radius: 6px; }
+  [data-testid="stExpander"] { border: 1px solid var(--border) !important; border-radius: var(--radius) !important; background: var(--bg-secondary); }
+  [data-testid="stExpander"] summary { min-height: 46px; }
+  hr { border-color: var(--border) !important; margin: .8rem 0 !important; }
+  .stAlert { background-color: var(--bg-card) !important; border: 1px solid var(--border) !important; border-radius: var(--radius) !important; }
+  .stRadio > div { background-color: var(--bg-card); padding: 8px 12px; border-radius: 10px; }
+  [data-testid="stProgress"] div[role="progressbar"] > div { background-color: var(--gold) !important; }
 
   .section-card {
     background: var(--bg-card);
     border: 1px solid var(--border);
     border-top: 3px solid var(--gold);
-    border-radius: 8px;
-    padding: 20px 24px;
-    margin-bottom: 24px;
+    border-radius: var(--radius);
+    padding: 16px 18px;
+    margin-bottom: 20px;
   }
 
+  /* ── Header ────────────────────────────────────────────────────────────── */
   .header-bar {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
     background: linear-gradient(90deg, var(--bg-secondary), var(--bg-card));
-    border-bottom: 2px solid var(--gold);
-    padding: 10px 20px;
-    margin-bottom: 20px;
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.8rem;
-    color: var(--text-muted);
+    border: 1px solid var(--border); border-left: 3px solid var(--gold);
+    border-radius: var(--radius);
+    padding: 10px 14px; margin-bottom: 14px;
+    font-family: 'JetBrains Mono', monospace; font-size: .78rem; color: var(--text-muted);
   }
+  .header-bar .hb-brand { color: var(--gold); font-weight: 700; letter-spacing: 1px; font-size: .95rem; }
+  .header-bar .hb-time  { color: var(--green); }
+  .header-bar .hb-dot   { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--green);
+                          margin-right:6px; animation: qe-pulse 2s ease-in-out infinite; }
+  @keyframes qe-pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+
+  /* ── KPI-tegels ────────────────────────────────────────────────────────── */
+  .qe-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 6px 0 12px; }
+  .qe-kpis.n6 { grid-template-columns: repeat(6, 1fr); }
+  .qe-kpi  { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius);
+             padding: 10px 12px; border-left: 3px solid var(--gold); }
+  .qe-kpi .k-l { font-size: .7rem; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .qe-kpi .k-v { font-family: 'JetBrains Mono', monospace; font-size: 1.5rem; font-weight: 700; color: var(--gold); line-height: 1.2; }
+  .qe-kpi.g { border-left-color: var(--green); } .qe-kpi.g .k-v { color: var(--green); }
+  .qe-kpi.r { border-left-color: var(--red); }   .qe-kpi.r .k-v { color: var(--red); }
+
+  /* ── Ticker-kaarten (tik = uitklappen, geen herlaadactie nodig) ────────── */
+  .qe-list { display: flex; flex-direction: column; gap: 8px; animation: qe-fade .25s ease-out; }
+  @keyframes qe-fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+  .qe-card { background: var(--bg-secondary); border: 1px solid var(--border); border-left: 4px solid var(--border);
+             border-radius: var(--radius); overflow: hidden; }
+  .qe-card.t-g { border-left-color: var(--green); background: linear-gradient(90deg, rgba(0,200,83,.07), var(--bg-secondary) 40%); }
+  .qe-card.t-y { border-left-color: var(--gold);  background: linear-gradient(90deg, rgba(240,185,11,.07), var(--bg-secondary) 40%); }
+  .qe-card.t-r { border-left-color: var(--red); }
+  .qe-card.t-x { border-left-color: var(--border); opacity: .6; }
+  .qe-card > summary { list-style: none; cursor: pointer; padding: 10px 12px; min-height: 48px; }
+  .qe-card > summary::-webkit-details-marker { display: none; }
+  .qe-card > summary:active { background: var(--bg-hover); }
+  .qe-r1, .qe-r2 { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .qe-r2 { margin-top: 6px; }
+  .qe-tk  { font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 1.05rem; color: var(--gold); }
+  .qe-px  { font-family: 'JetBrains Mono', monospace; font-size: 1rem; color: var(--text-primary); text-align: right; }
+  .qe-ext { display: block; font-size: .68rem; color: var(--text-muted); }
+  .qe-kpis.n6 .k-v { font-size: 1.1rem; }
+  .qe-chg { font-family: 'JetBrains Mono', monospace; font-size: .8rem; font-weight: 600; color: var(--text-muted); }
+  .qe-chg.up { color: var(--green); } .qe-chg.dn { color: var(--red); }
+  .qe-chips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  .qe-chip { font-family: 'JetBrains Mono', monospace; font-size: .7rem; padding: 2px 7px; border-radius: 20px;
+             background: var(--bg-card); border: 1px solid var(--border); color: var(--text-muted); white-space: nowrap; }
+  .qe-chip b { color: var(--text-primary); font-weight: 600; }
+  .qe-chip.g { background: rgba(0,132,58,.35); border-color: var(--green-dim); color: #CFF5DD; }
+  .qe-chip.g b { color: #fff; }
+  .qe-chip.r { background: rgba(163,32,64,.4); border-color: var(--red-dim); color: #FFD3DA; }
+  .qe-chip.r b { color: #fff; }
+  .qe-chip.y { background: rgba(160,124,8,.25); border-color: var(--gold-dim); color: var(--gold); }
+  .qe-act { font-size: .72rem; font-weight: 700; padding: 2px 9px; border-radius: 20px; white-space: nowrap;
+            background: var(--bg-card); color: var(--text-muted); border: 1px solid var(--border); }
+  .qe-act.g { background: var(--green-dim); color: #fff; border-color: var(--green); }
+  .qe-act.y { background: rgba(160,124,8,.25); color: var(--gold); border-color: var(--gold-dim); }
+  .qe-act.r { background: var(--red-dim); color: #fff; border-color: var(--red); }
+  .qe-body { padding: 4px 12px 12px; border-top: 1px dashed var(--border); display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; }
+  .qe-body .f-l { font-size: .66rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: .5px; }
+  .qe-body .f-v { font-family: 'JetBrains Mono', monospace; font-size: .85rem; color: var(--text-primary); word-break: break-word; }
+  .qe-body .wide { grid-column: 1 / -1; }
+  .qe-empty { padding: 18px; text-align: center; color: var(--text-muted); border: 1px dashed var(--border); border-radius: var(--radius); }
+
+  /* Rijen met key="qe_row_*" blijven ook op een telefoon naast elkaar staan */
+  [class*="st-key-qe_row"] [data-testid="stHorizontalBlock"] { flex-direction: row !important; flex-wrap: nowrap !important; gap: .5rem !important; }
+  [class*="st-key-qe_row"] [data-testid="stColumn"] { min-width: 0 !important; flex: 1 1 0 !important; width: auto !important; }
+  .st-key-qe_row_top [data-testid="stColumn"]:last-child { flex: 0 0 64px !important; }
 
   ::-webkit-scrollbar { width: 6px; height: 6px; }
   ::-webkit-scrollbar-track { background: var(--bg-secondary); }
   ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
-  ::-webkit-scrollbar-thumb:hover { background: var(--gold-dim); }
+
+  /* ── Telefoon ──────────────────────────────────────────────────────────── */
+  @media (max-width: 640px) {
+    .block-container { padding: 3.2rem .6rem calc(5rem + env(safe-area-inset-bottom)) !important; }
+    /* 16px voorkomt dat iOS Safari inzoomt bij het tikken op een invoerveld */
+    input, textarea, select, .stSelectbox div[data-baseweb="select"] * { font-size: 16px !important; }
+    .section-card { padding: 12px 10px; border-radius: 10px; margin-bottom: 14px; }
+    h3 { font-size: 1.1rem !important; }
+    .qe-kpis, .qe-kpis.n6 { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+    .qe-kpi .k-v { font-size: 1.15rem; word-break: break-word; }
+    .qe-kpi .k-v { font-size: 1.35rem; }
+    .header-bar .hb-long { display: none; }
+    .stTabs [data-baseweb="tab"] { padding: 0 12px; font-size: .8rem; }
+    [data-testid="stMetric"] { padding: 8px 10px; }
+    [data-testid="stMetricValue"] { font-size: 1.3rem !important; }
+    .stButton > button { width: 100%; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+  }
 </style>
 """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HEADER
 # ─────────────────────────────────────────────────────────────────────────────
-now_str = datetime.now().strftime("%A %d %b %Y  |  %H:%M:%S CET")
+_DAGEN   = ["maandag", "dinsdag", "woensdag", "donderdag", "vrijdag", "zaterdag", "zondag"]
+_MAANDEN = ["jan", "feb", "mrt", "apr", "mei", "jun", "jul", "aug", "sep", "okt", "nov", "dec"]
+
+
+def _now_nl() -> datetime:
+    """Huidige tijd in Nederland (Streamlit Cloud draait in UTC)."""
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("Europe/Amsterdam"))
+    except Exception:
+        return datetime.now()
+
+
+_n = _now_nl()
+now_str = f"{_DAGEN[_n.weekday()][:2]} {_n.day} {_MAANDEN[_n.month - 1]} · {_n:%H:%M}"
 st.markdown(f"""
 <div class="header-bar">
-  ⬛ <span style="color:#F0B90B; font-weight:700;">QUANTEDGE</span> &nbsp;|&nbsp;
-  QUANTITATIVE TRADING DASHBOARD &nbsp;|&nbsp;
-  <span style="color:#00C853;">{now_str}</span> &nbsp;|&nbsp;
-  <span style="color:#848E9C;">LIVE DATA · yfinance · MULTI-TF VALIDATED</span>
+  <span class="hb-brand">⬛ QUANTEDGE</span>
+  <span class="hb-long">QUANTITATIVE TRADING DASHBOARD · yfinance · MULTI-TF</span>
+  <span class="hb-time"><span class="hb-dot"></span>{now_str}</span>
 </div>
 """, unsafe_allow_html=True)
 
@@ -983,15 +1112,14 @@ def fetch_intraday_patterns(ticker: str) -> dict:
             return pat
 
         # 15M data ophalen (laatste 2 dagen = genoeg voor patroonherkenning)
-        df_15m = yf.download(ticker, period='2d', interval='15m',
-                             progress=False, auto_adjust=True)
+        # Ticker.history is thread-safe (yf.download deelt globale state)
+        df_15m = yf.Ticker(ticker).history(period='2d', interval='15m')
         if df_15m is not None and len(df_15m) >= 4:
             result['15M[0]']  = _get_pattern_and_dir(df_15m, '15M[0]')
             result['15M[-1]'] = _get_prev_pattern_and_dir(df_15m)
 
         # 5M data ophalen (laatste 1 dag)
-        df_5m = yf.download(ticker, period='1d', interval='5m',
-                            progress=False, auto_adjust=True)
+        df_5m = yf.Ticker(ticker).history(period='1d', interval='5m')
         if df_5m is not None and len(df_5m) >= 4:
             result['5M[0]']  = _get_pattern_and_dir(df_5m, '5M[0]')
             result['5M[-1]'] = _get_prev_pattern_and_dir(df_5m)
@@ -1035,8 +1163,7 @@ def compute_15m_mean_reversion(ticker: str) -> dict:
 
     try:
         # ── Data ophalen ─────────────────────────────────────────────────────
-        df = yf.download(ticker, period='2d', interval='15m',
-                         progress=False, auto_adjust=True)
+        df = yf.Ticker(ticker).history(period='2d', interval='15m')
         if df is None or len(df) < 6:
             result['status'] = '– Geen data'
             return result
@@ -1227,123 +1354,480 @@ def compute_15m_mean_reversion(ticker: str) -> dict:
     return result
 
 
-@st.cache_data(ttl=CACHE_PRICE_TTL)
-def build_main_table(tickers: tuple) -> pd.DataFrame:
-    """Bouw de hoofdmarkttabel op voor een lijst van tickers."""
-    import traceback as _tb
-    rows = []
-    for ticker in tickers:
+# ─────────────────────────────────────────────────────────────────────────────
+# HOOFDTABEL — parallel, per ticker gecachet, mislukkingen worden NIET gecachet
+#
+# Waarom zo:
+#   Eerder liep één grote gecachete functie sequentieel over alle tickers en deed
+#   per ticker ~6 Yahoo-aanroepen (history, 2× .info, 15M, 5M, 15M-MR). Zodra
+#   Yahoo ging throttlen werden de mislukte tickers 5 minuten lang als "N/A"
+#   gecachet. Nu:
+#     • dagdata + indicatoren per ticker in een eigen cache (exception = niet gecachet)
+#     • 6 tickers tegelijk, met backoff bij rate-limits
+#     • geen .info meer voor de valuta (afgeleid van het ticker-suffix)
+#     • 15M/5M-kolommen apart en alleen voor tickers die dagdata hebben
+# ─────────────────────────────────────────────────────────────────────────────
+MAIN_TABLE_WORKERS    = 6     # Gelijktijdige Yahoo-aanroepen (hoger = sneller, maar sneller rate-limit)
+MAIN_TABLE_REUSE_SECS = 300   # Hergebruik de samengestelde tabel zo lang bij widget-interacties
+_EUR_SUFFIXES = {'AS', 'DE', 'PA', 'MI', 'MC', 'BR', 'HE', 'LS', 'VI', 'IR', 'F'}
+_INTRA_COLS   = ['15M [-1]', '15M [0]', '5M [-1]', '5M [0]', '15M MR Status']
+
+
+def _currency_symbol(ticker: str) -> str:
+    """Valutateken zonder netwerkaanroep (t.info was de traagste yfinance-call)."""
+    t = str(ticker).upper()
+    if '.' not in t:
+        return '$'
+    return '€' if t.rsplit('.', 1)[1] in _EUR_SUFFIXES else ''
+
+
+def _explain_error(exc_name: str) -> str:
+    if 'RateLimit' in exc_name:
+        return 'Yahoo rate-limit — vernieuw zo'
+    if 'Missing' in exc_name or 'Delisted' in exc_name or exc_name == 'ValueError':
+        return 'Geen koersdata (delisted?)'
+    return 'Tijdelijk niet beschikbaar'
+
+
+def _parallel_map(func, items, workers: int = MAIN_TABLE_WORKERS, on_progress=None) -> dict:
+    """
+    Voer func(item) voor alle items parallel uit. Retourneert {item: resultaat}.
+    on_progress(done, total) wordt vanuit de hoofd-thread aangeroepen, dus het
+    is veilig om daar een st.progress bij te werken.
+    """
+    items = list(items)
+    results = {}
+    if not items:
+        return results
+    ctx = get_script_run_ctx() if get_script_run_ctx else None
+
+    def _init():
+        # Geeft de worker-threads toegang tot st.cache_data zonder waarschuwingen
+        if ctx is not None and add_script_run_ctx is not None:
+            add_script_run_ctx(threading.current_thread(), ctx)
+
+    with ThreadPoolExecutor(max_workers=workers, initializer=_init) as ex:
+        futs = {ex.submit(func, it): it for it in items}
+        done = 0
+        for fut in as_completed(futs):
+            it = futs[fut]
+            try:
+                results[it] = fut.result()
+            except Exception as e:                      # worker mag nooit de app slopen
+                results[it] = e
+            done += 1
+            if on_progress:
+                on_progress(done, len(items))
+    return results
+
+
+@st.cache_data(ttl=CACHE_PRICE_TTL, show_spinner=False)
+def _fetch_history(ticker: str, period: str, min_rows: int) -> pd.DataFrame:
+    """
+    Dagkoersen voor één ticker, zonder .info. Bij geen data of een fout wordt een
+    exception gegooid: st.cache_data cachet exceptions NIET, dus een tijdelijke
+    Yahoo-storing blijft niet 5 minuten als 'N/A' hangen.
+    """
+    df, last_exc = None, None
+    for attempt in range(3):
         try:
-            df, info = fetch_ticker_data(ticker, period=DATA_MAIN_PERIOD)
-            if df is None or len(df) < DATA_MIN_ROWS_MAIN:
-                rows.append({
-                    'Ticker': ticker, 'Koers': 'N/A', 'RSI (14D)': 'N/A',
-                    'Support (30D)': 'N/A', 'Weerstand (30D)': 'N/A', 'Afwijking %': 'N/A',
-                    'Patroon (1D)': 'N/A', '15M [-1]': '–', '15M [0]': '–',
-                    '5M [-1]': '–', '5M [0]': '–', '15M MR Status': '–', '_mr15_dir': '',
-                    'Koers Status / Fase': '⚠ Geen Data', 'Actie': '⚠ Geen Data'
-                })
-                continue
+            df = yf.Ticker(ticker).history(period=period, raise_errors=True)
+            last_exc = None
+            break
+        except YFRateLimitError as e:                  # backoff en opnieuw proberen
+            last_exc = e
+            time.sleep(1.2 * (attempt + 1))
+        except Exception as e:                         # delisted e.d.: niet opnieuw proberen
+            last_exc = e
+            break
+    if last_exc is not None:
+        raise last_exc
 
-            close = df['Close'].squeeze()   # Garandeert 1D Series
+    if df is None or df.empty:
+        raise ValueError("Geen koersdata")
+    if isinstance(df.columns, pd.MultiIndex):
+        df = df.copy()
+        df.columns = [c[0] for c in df.columns]
+    if not {'Open', 'High', 'Low', 'Close', 'Volume'}.issubset(set(df.columns)):
+        raise ValueError("Onvolledige data")
+    df = df.dropna(subset=['Close'])
+    if len(df) < min_rows:
+        raise ValueError("Te weinig data")
+    return df
 
-            # Scalar extractie — pakt altijd één getal, ook als squeeze een rij retourneert
-            raw_last = close.iloc[-1]
-            last_price = round(float(raw_last.iloc[0]) if hasattr(raw_last, 'iloc') else float(raw_last), 2)
 
-            if math.isnan(last_price):
-                # Probeer de laatste niet-NaN waarde
-                non_nan = close.dropna()
-                if non_nan.empty:
-                    raise ValueError(f"Alle Close-waarden zijn NaN voor {ticker}")
-                last_price = round(float(non_nan.iloc[-1]), 2)
-            rsi_val = compute_rsi(close, RSI_PERIOD)
-            support_30, resistance_30 = compute_support_resistance(df, SUPPORT_WINDOW, current_price=last_price)
-            deviation = round(((last_price - support_30) / support_30) * 100, 2) if support_30 > 0 else 0.0
-            pattern = detect_candlestick_pattern(df)
-            phase = determine_phase(rsi_val, deviation, pattern)
-            action = determine_action(rsi_val, deviation, pattern, phase)
+@st.cache_data(ttl=CACHE_PRICE_TTL, show_spinner=False)
+def _fetch_daily_core(ticker: str, period: str) -> dict:
+    """Dagdata + indicatoren voor één ticker (exception bij mislukken → niet gecachet)."""
+    df = _fetch_history(ticker, period, DATA_MIN_ROWS_MAIN)
 
-            currency = info.get('currency', '')
-            symbol = '€' if currency == 'EUR' else '$' if currency == 'USD' else ''
+    close      = df['Close'].squeeze()
+    last_price = round(float(close.iloc[-1]), 2)
+    rsi_val    = compute_rsi(close, RSI_PERIOD)
+    support_30, resistance_30 = compute_support_resistance(df, SUPPORT_WINDOW, current_price=last_price)
+    deviation  = round(((last_price - support_30) / support_30) * 100, 2) if support_30 > 0 else 0.0
+    pattern    = detect_candlestick_pattern(df)
+    phase      = determine_phase(rsi_val, deviation, pattern)
+    action     = determine_action(rsi_val, deviation, pattern, phase)
+    prev       = float(close.iloc[-2]) if len(close) >= 2 else 0.0
+    day_chg    = round((last_price / prev - 1) * 100, 2) if prev > 0 else 0.0
 
-            # ── Live prijs ophalen incl. aftermarket / pre-market ─────────────
-            live = fetch_live_price(ticker)
-            display_price = live['price'] if live['price'] else last_price
-            ext_price     = live['extended']
-            market_phase  = live['market_phase']
-            change_ext    = live['change_ext']
+    return {
+        'last_price': last_price, 'rsi': rsi_val,
+        'support': support_30, 'resistance': resistance_30,
+        'deviation': deviation, 'pattern': pattern,
+        'phase': phase, 'action': action, 'day_chg': day_chg,
+    }
 
-            # Koers-label: toon extended prijs + badge als beschikbaar
-            if ext_price and market_phase in ('AFTER-HOURS', 'PRE-MARKET'):
-                chg_str = ''
-                if change_ext is not None:
-                    arrow = '▲' if change_ext >= 0 else '▼'
-                    chg_str = f" {arrow}{abs(change_ext):.2f}%"
-                badge = '🌙' if market_phase == 'AFTER-HOURS' else '🌅'
-                koers_str = f"{symbol}{display_price:,.2f} {badge}{chg_str}"
-            else:
-                koers_str = f"{symbol}{display_price:,.2f}"
 
-            safe_deviation = deviation if not math.isnan(deviation) else 0.0
-            safe_rsi_float = float(rsi_val) if not np.isnan(rsi_val) else 50.0
-            rsi_display = str(int(rsi_val)) if not np.isnan(rsi_val) else 'N/A'
+def _daily_worker(ticker: str) -> dict:
+    try:
+        core = _fetch_daily_core(ticker, DATA_MAIN_PERIOD)
+    except Exception as e:
+        return {'ok': False, 'ticker': ticker, 'err': _explain_error(type(e).__name__)}
+    live = fetch_live_price(ticker)          # 60s cache; mislukking → val terug op slotkoers
+    return {'ok': True, 'ticker': ticker, 'core': core, 'live': live}
 
-            # ── Intraday patronen (15M en 5M) ────────────────────────────────
-            try:
-                intra = fetch_intraday_patterns(ticker)
-            except Exception:
-                intra = {'15M[-1]': '–', '15M[0]': '–', '5M[-1]': '–', '5M[0]': '–'}
-            try:
-                mr15 = compute_15m_mean_reversion(ticker)
-            except Exception:
-                mr15 = {'status': '–', 'direction': None}
 
-            rows.append({
-                'Ticker': ticker,
-                'Koers': koers_str,
-                'RSI (14D)': rsi_display,
-                'Support (30D)': f"{symbol}{support_30:,.2f}",
-                'Weerstand (30D)': f"{symbol}{resistance_30:,.2f}",
-                'Afwijking %': f"{safe_deviation:.2f}",
-                '_dev_float': safe_deviation,
-                '_rsi_float': safe_rsi_float,
-                '_ext_chg': change_ext if (ext_price and market_phase in ('AFTER-HOURS', 'PRE-MARKET')) else None,
-                'Patroon (1D)': pattern,
-                '15M [-1]': intra['15M[-1]'],
-                '15M [0]':  intra['15M[0]'],
-                '5M [-1]':  intra['5M[-1]'],
-                '5M [0]':   intra['5M[0]'],
-                '15M MR Status': mr15['status'],
-                '_mr15_dir': mr15['direction'] or '',
-                'Koers Status / Fase': phase,
-                'Actie': action,
-            })
-        except Exception as e:
-            err_detail = str(e)
-            rows.append({
-                'Ticker': ticker, 'Koers': 'ERR', 'RSI (14D)': 'ERR',
-                'Support (30D)': 'ERR', 'Weerstand (30D)': 'ERR', 'Afwijking %': 'ERR',
-                '_dev_float': 999.0, '_rsi_float': 50.0, '_ext_chg': None,
-                'Patroon (1D)': 'ERR', '15M [-1]': '–', '15M [0]': '–',
-                '5M [-1]': '–', '5M [0]': '–', '15M MR Status': '–', '_mr15_dir': '',
-                'Koers Status / Fase': f'⚠ {err_detail[:40]}', 'Actie': '⚠ Fout'
-            })
-    # Zorg dat de volledige DataFrame geen gemengde kolomtypes heeft
+def _row_from_result(res: dict) -> dict:
+    ticker = res['ticker']
+    if not res.get('ok'):
+        return {
+            'Ticker': ticker, 'Koers': 'N/A', 'Dag %': 'N/A', 'RSI (14D)': 'N/A',
+            'Support (30D)': 'N/A', 'Weerstand (30D)': 'N/A', 'Afwijking %': 'N/A',
+            '_dev_float': np.nan, '_rsi_float': np.nan, '_ext_chg': np.nan, '_day_chg': np.nan,
+            'Patroon (1D)': 'N/A',
+            '15M [-1]': '–', '15M [0]': '–', '5M [-1]': '–', '5M [0]': '–',
+            '15M MR Status': '–', '_mr15_dir': '',
+            'Koers Status / Fase': '⚠ Geen Data', 'Actie': '⚠ Geen Data',
+            '_ok': False, '_err': res.get('err', ''),
+        }
+
+    core, live = res['core'], (res.get('live') or {})
+    symbol        = _currency_symbol(ticker)
+    last_price    = core['last_price']
+    display_price = live.get('price') or last_price
+    ext_price     = live.get('extended')
+    market_phase  = live.get('market_phase')
+    change_ext    = live.get('change_ext')
+
+    if ext_price and market_phase in ('AFTER-HOURS', 'PRE-MARKET'):
+        chg_str = ''
+        if change_ext is not None:
+            arrow   = '▲' if change_ext >= 0 else '▼'
+            chg_str = f" {arrow}{abs(change_ext):.2f}%"
+        badge     = '🌙' if market_phase == 'AFTER-HOURS' else '🌅'
+        koers_str = f"{symbol}{display_price:,.2f} {badge}{chg_str}"
+    else:
+        koers_str = f"{symbol}{display_price:,.2f}"
+
+    rsi_val        = core['rsi']
+    safe_deviation = core['deviation'] if not math.isnan(core['deviation']) else 0.0
+    rsi_is_nan     = rsi_val is None or (isinstance(rsi_val, float) and np.isnan(rsi_val))
+
+    return {
+        'Ticker': ticker,
+        'Koers': koers_str,
+        'Dag %': f"{'▲' if core['day_chg'] >= 0 else '▼'} {abs(core['day_chg']):.2f}%",
+        'RSI (14D)': 'N/A' if rsi_is_nan else str(int(rsi_val)),
+        'Support (30D)': f"{symbol}{core['support']:,.2f}",
+        'Weerstand (30D)': f"{symbol}{core['resistance']:,.2f}",
+        'Afwijking %': f"{safe_deviation:.2f}",
+        '_dev_float': safe_deviation,
+        '_rsi_float': 50.0 if rsi_is_nan else float(rsi_val),
+        '_ext_chg': change_ext if (ext_price and market_phase in ('AFTER-HOURS', 'PRE-MARKET')) else None,
+        '_day_chg': core['day_chg'],
+        'Patroon (1D)': core['pattern'],
+        '15M [-1]': '–', '15M [0]': '–', '5M [-1]': '–', '5M [0]': '–',
+        '15M MR Status': '–', '_mr15_dir': '',
+        'Koers Status / Fase': core['phase'],
+        'Actie': core['action'],
+        '_ok': True, '_err': '',
+    }
+
+
+def _finalize_main_df(rows: list) -> pd.DataFrame:
     df_result = pd.DataFrame(rows)
-    # Forceer alle display-kolommen naar string zodat Arrow nooit crasht
-    for _col in ['RSI (14D)', 'Afwijking %', 'Koers', 'Support (30D)', 'Weerstand (30D)',
+    # Forceer display-kolommen naar string zodat Arrow nooit crasht op gemengde types
+    for _col in ['RSI (14D)', 'Afwijking %', 'Koers', 'Dag %', 'Support (30D)', 'Weerstand (30D)',
                  'Patroon (1D)', '15M [-1]', '15M [0]', '5M [-1]', '5M [0]',
                  '15M MR Status', 'Koers Status / Fase', 'Actie']:
         if _col in df_result.columns:
             df_result[_col] = df_result[_col].astype(str)
-    # _ext_chg mag None bevatten — convert naar float waarbij None → NaN
-    if '_ext_chg' in df_result.columns:
-        df_result['_ext_chg'] = pd.to_numeric(df_result['_ext_chg'], errors='coerce')
+    for _col in ('_ext_chg', '_day_chg', '_dev_float', '_rsi_float'):
+        if _col in df_result.columns:
+            df_result[_col] = pd.to_numeric(df_result[_col], errors='coerce')
     return df_result
 
 
-def style_main_table(df: pd.DataFrame) -> pd.io.formats.style.Styler:
+def build_main_table(tickers: tuple, progress=None) -> pd.DataFrame:
+    """Fase 1: dagdata + live prijs, parallel. Geeft altijd één rij per ticker terug."""
+    uniq    = list(dict.fromkeys(tickers))
+    results = _parallel_map(_daily_worker, uniq, on_progress=progress)
+    rows = []
+    for t in uniq:
+        r = results.get(t)
+        if not isinstance(r, dict):                     # worker crashte onverwacht
+            r = {'ok': False, 'ticker': t, 'err': 'Tijdelijk niet beschikbaar'}
+        rows.append(_row_from_result(r))
+    return _finalize_main_df(rows)
+
+
+def _intraday_worker(ticker: str) -> dict:
+    try:
+        intra = fetch_intraday_patterns(ticker)
+    except Exception:
+        intra = {'15M[-1]': '–', '15M[0]': '–', '5M[-1]': '–', '5M[0]': '–'}
+    try:
+        mr15 = compute_15m_mean_reversion(ticker)
+    except Exception:
+        mr15 = {'status': '–', 'direction': None}
+    return {
+        '15M [-1]': intra.get('15M[-1]', '–'), '15M [0]': intra.get('15M[0]', '–'),
+        '5M [-1]':  intra.get('5M[-1]', '–'),  '5M [0]':  intra.get('5M[0]', '–'),
+        '15M MR Status': mr15.get('status', '–'),
+        '_mr15_dir': mr15.get('direction') or '',
+    }
+
+
+def add_intraday_columns(df: pd.DataFrame, progress=None) -> pd.DataFrame:
+    """Fase 2: 15M/5M-patronen en 15M Mean Reversion — alleen voor tickers met dagdata."""
+    if df is None or df.empty or '_ok' not in df.columns:
+        return df
+    ok_tickers = df.loc[df['_ok'] == True, 'Ticker'].tolist()   # noqa: E712
+    results = _parallel_map(_intraday_worker, ok_tickers, on_progress=progress)
+    out = df.copy()
+    for col in _INTRA_COLS + ['_mr15_dir']:
+        out[col] = [
+            (results.get(t) or {}).get(col, '–' if col != '_mr15_dir' else '')
+            if isinstance(results.get(t), dict) else ('–' if col != '_mr15_dir' else '')
+            for t in out['Ticker']
+        ]
+        if col != '_mr15_dir':
+            out[col] = out[col].astype(str)
+    return out
+
+
+def refresh_market_data() -> None:
+    """Wis alléén de koersdata-caches (niet de dure ticker-pool) en de sessie-cache."""
+    for fn in (_fetch_history, _fetch_daily_core, fetch_live_price, fetch_intraday_patterns,
+               compute_15m_mean_reversion, fetch_ticker_data, fetch_ticker_data_fast):
+        try:
+            fn.clear()
+        except Exception:
+            pass
+    st.session_state.pop('_main_cache', None)
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# UI-HELPERS  (iPhone-first)
+# ─────────────────────────────────────────────────────────────────────────────
+def _is_mobile_ua() -> bool:
+    """Telefoon-herkenning via de User-Agent van het verzoek (Streamlit ≥ 1.37)."""
+    try:
+        ua = str(st.context.headers.get("User-Agent", "")).lower()
+    except Exception:
+        return False
+    return any(k in ua for k in ("iphone", "ipod", "android", "mobile"))
+
+
+def load_main_df(tickers: tuple, want_intra: bool):
+    """
+    Geeft (df, laadtijd). De samengestelde tabel wordt MAIN_TABLE_REUSE_SECS in de
+    sessie bewaard, zodat tikken op filters/zoekvelden niets opnieuw hoeft op te halen.
+    Intraday-kolommen (15M/5M) worden alleen berekend als de tabelweergave actief is.
+    """
+    if not tickers:
+        return pd.DataFrame(), time.time()
+
+    cache = st.session_state.get('_main_cache')
+    now   = time.time()
+    fresh = bool(cache) and cache['key'] == tickers and (now - cache['ts']) < MAIN_TABLE_REUSE_SECS
+
+    if not fresh:
+        bar = st.progress(0.0, text=f"Koersen laden… 0/{len(tickers)}")
+
+        def _cb(done, total):
+            bar.progress(done / total, text=f"Koersen laden… {done}/{total}")
+
+        try:
+            df = build_main_table(tickers, progress=_cb)
+        finally:
+            bar.empty()
+        cache = {'key': tickers, 'ts': now, 'df': df, 'intra': False}
+        st.session_state['_main_cache'] = cache
+
+    if want_intra and not cache['intra']:
+        bar = st.progress(0.0, text="Intraday-signalen laden…")
+
+        def _cb2(done, total):
+            bar.progress(done / total, text=f"Intraday-signalen laden… {done}/{total}")
+
+        try:
+            cache['df'] = add_intraday_columns(cache['df'], progress=_cb2)
+            cache['intra'] = True
+        finally:
+            bar.empty()
+
+    return cache['df'], cache['ts']
+
+
+def render_kpis(items: list) -> str:
+    """items = [(label, waarde, kleurklasse '' | 'g' | 'r'), ...] → HTML-grid (2×2 op telefoon)."""
+    tiles = ''.join(
+        f'<div class="qe-kpi {cls}"><div class="k-l">{_esc(str(lab))}</div><div class="k-v">{_esc(str(val))}</div></div>'
+        for lab, val, cls in items
+    )
+    return f'<div class="qe-kpis">{tiles}</div>'
+
+
+MAIN_FILTERS = ["Alles", "🟢 Koopwaardig", "⚡ Bodem", "🚀 Uptrend", "🌱 Herstel", "⚠ Geen data"]
+MAIN_SORTS   = ["Standaard", "Dag % ↓ (stijgers)", "Dag % ↑ (dalers)", "RSI laag → hoog", "Dichtst bij support", "A → Z"]
+
+
+def filter_sort_main(df: pd.DataFrame, flt: str, query: str, sort: str) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+    out = df
+    phase, action = out['Koers Status / Fase'], out['Actie']
+    if flt == "🟢 Koopwaardig":
+        out = out[action.str.contains('KOOPWAARDIG', na=False)]
+    elif flt == "⚡ Bodem":
+        out = out[phase.str.contains('Bodemfase', na=False)]
+    elif flt == "🚀 Uptrend":
+        out = out[phase.str.contains('Uptrend', na=False)]
+    elif flt == "🌱 Herstel":
+        out = out[phase.str.contains('Herstel', na=False)]
+    elif flt == "⚠ Geen data":
+        out = out[out['_ok'] == False]                  # noqa: E712
+
+    terms = [t for t in re.split(r'[\s,;]+', (query or '').upper()) if t]
+    if terms:
+        out = out[out['Ticker'].str.upper().apply(lambda tk: any(t in tk for t in terms))]
+
+    if sort == "Dag % ↓ (stijgers)":
+        out = out.sort_values('_day_chg', ascending=False, na_position='last')
+    elif sort == "Dag % ↑ (dalers)":
+        out = out.sort_values('_day_chg', ascending=True, na_position='last')
+    elif sort == "RSI laag → hoog":
+        out = out.sort_values('_rsi_float', ascending=True, na_position='last')
+    elif sort == "Dichtst bij support":
+        out = out.sort_values('_dev_float', ascending=True, na_position='last')
+    elif sort == "A → Z":
+        out = out.sort_values('Ticker')
+    return out
+
+
+def _card_tone(phase: str, action: str, ok: bool) -> str:
+    if not ok:
+        return 't-x'
+    if 'KOOPWAARDIG' in action or 'Bodemfase' in phase or 'Vroeg Herstel' in phase:
+        return 't-g'
+    if 'Uptrend' in phase:
+        return 't-y'
+    if 'VOORZICHTIG' in action:
+        return 't-r'
+    return ''
+
+
+def _field(label: str, value: str, wide: bool = False) -> str:
+    return (f'<div class="{"wide" if wide else ""}"><div class="f-l">{_esc(label)}</div>'
+            f'<div class="f-v">{_esc(str(value))}</div></div>')
+
+
+def _px_html(koers) -> str:
+    """Koers + (optioneel) after-/pre-market-regel apart, zodat die niet voor dagverandering doorgaat."""
+    txt = str(koers)
+    m = re.match(r'^(.*?)\s+([🌙🌅].*)$', txt)
+    if not m:
+        return _esc(txt)
+    return f'{_esc(m.group(1))}<small class="qe-ext">{_esc(m.group(2))}</small>'
+
+
+def render_ticker_cards(df: pd.DataFrame) -> str:
+    """Compacte kaartenlijst. <details> klapt lokaal uit, dus zonder server-rerun."""
+    if df is None or df.empty:
+        return '<div class="qe-empty">Geen tickers voor dit filter.</div>'
+    parts = ['<div class="qe-list">']
+    for _, r in df.iterrows():
+        ok     = bool(r.get('_ok', True))
+        phase  = str(r.get('Koers Status / Fase', ''))
+        action = str(r.get('Actie', ''))
+        tone   = _card_tone(phase, action, ok)
+        tk     = _esc(str(r['Ticker']))
+
+        if not ok:
+            parts.append(
+                f'<details class="qe-card {tone}"><summary>'
+                f'<div class="qe-r1"><span class="qe-tk">{tk}</span><span class="qe-act">⚠ Geen data</span></div>'
+                f'</summary><div class="qe-body">{_field("Reden", r.get("_err") or "Onbekend", True)}</div></details>'
+            )
+            continue
+
+        rsi_f, dev_f, dc = r.get('_rsi_float'), r.get('_dev_float'), r.get('_day_chg')
+        rsi_cls = 'g' if (pd.notna(rsi_f) and rsi_f < TABLE_RSI_GREEN) else 'r' if (pd.notna(rsi_f) and rsi_f > TABLE_RSI_RED) else ''
+        dev_cls = 'g' if (pd.notna(dev_f) and dev_f < TABLE_DEV_GREEN) else 'y' if (pd.notna(dev_f) and dev_f > TABLE_DEV_GOLD) else ''
+        act_cls = 'g' if 'KOOPWAARDIG' in action else 'r' if 'VOORZICHTIG' in action else 'y' if 'AANHOUDEN' in action else ''
+        chg_cls = 'up' if (pd.notna(dc) and dc >= 0) else 'dn' if pd.notna(dc) else ''
+
+        body = (
+            _field('Fase', phase, True)
+            + _field('Support (30D)', r.get('Support (30D)', '–'))
+            + _field('Weerstand (30D)', r.get('Weerstand (30D)', '–'))
+            + _field('Patroon (1D)', r.get('Patroon (1D)', '–'), True)
+        )
+        mr = str(r.get('15M MR Status', '–'))
+        if mr not in ('–', '', 'nan'):
+            body += _field('15M Mean Reversion', mr, True)
+        for _ic in ('15M [0]', '5M [0]'):
+            _iv = str(r.get(_ic, '–'))
+            if _iv not in ('–', '', 'nan'):
+                body += _field(_ic, _iv)
+
+        parts.append(
+            f'<details class="qe-card {tone}"><summary>'
+            f'<div class="qe-r1"><span class="qe-tk">{tk}</span><span class="qe-px">{_px_html(r.get("Koers", ""))}</span></div>'
+            f'<div class="qe-r2"><div class="qe-chips">'
+            f'<span class="qe-act {act_cls}">{_esc(action)}</span>'
+            f'<span class="qe-chip {rsi_cls}">RSI <b>{_esc(str(r.get("RSI (14D)", "–")))}</b></span>'
+            f'<span class="qe-chip {dev_cls}">Afw <b>{_esc(str(r.get("Afwijking %", "–")))}%</b></span>'
+            f'</div><span class="qe-chg {chg_cls}">{_esc(str(r.get("Dag %", "")))}</span></div>'
+            f'</summary><div class="qe-body">{body}</div></details>'
+        )
+    parts.append('</div>')
+    return ''.join(parts)
+
+
+def _wl_row(item) -> dict:
+    """Eén watchlist-rij (draait in een worker-thread; geen .info-aanroep)."""
+    ticker, label = item
+    try:
+        df_wl = _fetch_history(ticker, DATA_WL_PERIOD, DATA_MIN_ROWS_FETCH)
+    except Exception as e:
+        return {'Ticker': ticker, 'Label': label, 'Koers': 'N/A', 'Dag %': 'N/A', 'RSI': 'N/A',
+                'Support': 'N/A', 'Weerstand': 'N/A', 'Afw. Support %': 'N/A',
+                'Gedetecteerd Patroon': f'⚠ {_explain_error(type(e).__name__)}'}
+    cl  = df_wl['Close'].squeeze()
+    lp  = round(float(cl.iloc[-1]), 2)
+    sym = _currency_symbol(ticker)
+    rsi_wl = compute_rsi(cl, RSI_PERIOD)
+    pat_wl = detect_candlestick_pattern(df_wl)
+    sup_wl, res_wl = compute_support_resistance(df_wl, SUPPORT_WINDOW, current_price=lp)
+    dev_wl = round(((lp - sup_wl) / sup_wl) * 100, 2) if sup_wl > 0 else 0.0
+    day_chg = round((cl.iloc[-1] / cl.iloc[-2] - 1) * 100, 2) if len(cl) >= 2 and cl.iloc[-2] else 0.0
+    return {
+        'Ticker': ticker, 'Label': label,
+        'Koers': f"{sym}{lp:,.2f}",
+        'Dag %': f"{'▲' if day_chg >= 0 else '▼'} {abs(day_chg):.2f}%",
+        'RSI': 'N/A' if (rsi_wl is None or (isinstance(rsi_wl, float) and np.isnan(rsi_wl))) else str(int(rsi_wl)),
+        'Support': f"{sym}{sup_wl:,.2f}", 'Weerstand': f"{sym}{res_wl:,.2f}",
+        'Afw. Support %': f"{dev_wl:.2f}",
+        'Gedetecteerd Patroon': pat_wl,
+    }
+
+
+def style_main_table(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
     """Pas dark terminal-stijl toe op de hoofdtabel."""
     # Verberg interne float-kolommen
     display_cols = [c for c in df.columns if not c.startswith('_')]
@@ -1353,17 +1837,13 @@ def style_main_table(df: pd.DataFrame) -> pd.io.formats.style.Styler:
         base = 'background-color: #13171C; color: #E8ECEF;'
         styles = [base] * len(row)
 
-        # Haal intern opgeslagen floats op via de originele df
-        ticker_val = row.get('Ticker', '')
-        orig_row = df[df['Ticker'] == ticker_val]
-        rsi_v    = float(orig_row['_rsi_float'].iloc[0]) if not orig_row.empty else 50.0
-        dev_v    = float(orig_row['_dev_float'].iloc[0]) if not orig_row.empty else 999.0
-        ext_chg  = orig_row['_ext_chg'].iloc[0] if not orig_row.empty else None
-        # ext_chg kan 'None' als string zijn na astype(str) — zet terug naar None
-        try:
-            ext_chg_f = float(ext_chg) if ext_chg not in (None, 'None', '', 'nan') else None
-        except (ValueError, TypeError):
-            ext_chg_f = None
+        # Interne float-kolommen ophalen via het rij-label (O(1) i.p.v. filteren per rij)
+        orig_row = df.loc[row.name]
+        rsi_v    = float(orig_row['_rsi_float'])
+        dev_v    = float(orig_row['_dev_float'])
+        ext_raw  = orig_row['_ext_chg']
+        ext_chg_f = float(ext_raw) if pd.notna(ext_raw) else None
+        day_raw  = orig_row['_day_chg'] if '_day_chg' in df.columns else np.nan
 
         phase  = str(row.get('Koers Status / Fase', ''))
         action = str(row.get('Actie', ''))
@@ -1390,6 +1870,12 @@ def style_main_table(df: pd.DataFrame) -> pd.io.formats.style.Styler:
             else:
                 txt_color = '#E8ECEF'   # neutraal
             styles[idx] = f'{current_bg}; color: {txt_color}; font-weight: 600;'
+
+        # Dag % kolom: groen/rood tekst
+        if 'Dag %' in col_list and pd.notna(day_raw):
+            idx = col_list.index('Dag %')
+            current_bg = styles[idx].split(';')[0]
+            styles[idx] = f"{current_bg}; color: {'#00C853' if day_raw >= 0 else '#F6465D'}; font-weight: 600;"
 
         # RSI kolom
         if 'RSI (14D)' in col_list:
@@ -2392,7 +2878,7 @@ def run_scanner(strategy: str, pool: list, max_results: int = 9999) -> pd.DataFr
     return result_df
 
 
-def style_scanner_df(df: pd.DataFrame) -> pd.io.formats.style.Styler:
+def style_scanner_df(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
     """Stijl de scanner-resultaten tabel."""
     def row_style(row):
         base = 'background-color: #13171C; color: #E8ECEF;'
@@ -2817,36 +3303,44 @@ main_tabs = st.tabs([
 # TAB 1: CORE MARKET TRACKER  (+ ingebouwde Watchlist)
 # ═════════════════════════════════════════════════════════════════════════════
 with main_tabs[0]:
-    st.markdown('<div class="section-card">', unsafe_allow_html=True)
-    st.markdown("### 📊 Core Market Tracker — Live Overzicht")
-    st.markdown('<small style="color:#848E9C;">Live koersen · RSI 14D · Support 30D · Patroon Detectie · Fase Analyse · Actie Signaal</small>', unsafe_allow_html=True)
-    st.markdown("---")
+    # Op een telefoon standaard de kaartweergave (eenmalig; daarna bepaalt de gebruiker het zelf)
+    if 'mobile_view' not in st.session_state:
+        st.session_state['mobile_view'] = _is_mobile_ua()
 
-    # ── Beheer Panel ──────────────────────────────────────────────────────────
-    col_add, col_del, col_act = st.columns([2, 2, 1])
+    # ── Titel + refresh ───────────────────────────────────────────────────────
+    with st.container(key="qe_row_top"):
+        _t1, _t2 = st.columns([5, 1])
+        with _t1:
+            st.markdown("### 📊 Market Tracker")
+        with _t2:
+            if st.button("🔄", key="btn_refresh_main", help="Koersen opnieuw ophalen"):
+                refresh_market_data()
 
-    with col_add:
-        new_ticker = st.text_input(
-            "➕ Ticker Toevoegen",
-            placeholder="bijv. AAPL, ADYEN.AS, BESI.AS...",
-            key="add_ticker_input",
-        )
-        if st.button("Toevoegen", key="btn_add_ticker"):
-            t = new_ticker.strip().upper()
-            if t and t not in st.session_state.main_market_tickers:
-                st.session_state.main_market_tickers.append(t)
-                _save_userdata()
-                err = st.session_state.get("_last_save_error")
-                if err:
-                    st.warning(f"✅ {t} toegevoegd (lokaal) maar GitHub opslag mislukt: {err}")
-                else:
-                    st.success(f"✅ {t} toegevoegd en opgeslagen.")
-                st.rerun()
-            elif t in st.session_state.main_market_tickers:
-                st.warning(f"⚠ {t} staat al in de lijst.")
+    # ── Beheer (ingeklapt, zodat de koersen direct bovenaan staan) ─────────────
+    with st.expander(f"⚙️ Tickers beheren · {len(st.session_state.main_market_tickers)} in lijst", expanded=False):
+        tab_add, tab_imp, tab_del, tab_exp = st.tabs(["➕ Toevoegen", "📋 Import", "🗑 Verwijderen", "📤 Export"])
 
-        # Import: plak een kommalijst om tickers toe te voegen
-        with st.expander("📋 Import — meerdere tickers tegelijk", expanded=False):
+        with tab_add:
+            new_ticker = st.text_input(
+                "Ticker toevoegen",
+                placeholder="bijv. AAPL, ADYEN.AS, BESI.AS...",
+                key="add_ticker_input",
+            )
+            if st.button("Toevoegen", key="btn_add_ticker"):
+                t = new_ticker.strip().upper()
+                if t and t not in st.session_state.main_market_tickers:
+                    st.session_state.main_market_tickers.append(t)
+                    _save_userdata()
+                    err = st.session_state.get("_last_save_error")
+                    if err:
+                        st.warning(f"✅ {t} toegevoegd (lokaal) maar GitHub opslag mislukt: {err}")
+                    else:
+                        st.success(f"✅ {t} toegevoegd en opgeslagen.")
+                    st.rerun()
+                elif t in st.session_state.main_market_tickers:
+                    st.warning(f"⚠ {t} staat al in de lijst.")
+
+        with tab_imp:
             import_txt = st.text_area(
                 "Plak tickers (komma- of regelgescheiden)",
                 placeholder="AAPL, MSFT, GOOGL\nTSLA\nNVDA",
@@ -2867,136 +3361,130 @@ with main_tabs[0]:
                 else:
                     st.info("Geen nieuwe tickers gevonden.")
 
-    with col_del:
-        ticker_to_remove = st.selectbox(
-            "🗑 Ticker Verwijderen",
-            options=["— Selecteer —"] + st.session_state.main_market_tickers,
-            key="remove_ticker_select"
-        )
-        if st.button("Verwijderen", key="btn_remove_ticker"):
-            if ticker_to_remove != "— Selecteer —" and ticker_to_remove in st.session_state.main_market_tickers:
-                st.session_state.main_market_tickers.remove(ticker_to_remove)
-                _save_userdata()
-                st.success(f"🗑 {ticker_to_remove} verwijderd.")
-                st.rerun()
+        with tab_del:
+            ticker_to_remove = st.selectbox(
+                "Ticker verwijderen",
+                options=["— Selecteer —"] + st.session_state.main_market_tickers,
+                key="remove_ticker_select"
+            )
+            if st.button("Verwijderen", key="btn_remove_ticker"):
+                if ticker_to_remove != "— Selecteer —" and ticker_to_remove in st.session_state.main_market_tickers:
+                    st.session_state.main_market_tickers.remove(ticker_to_remove)
+                    _save_userdata()
+                    st.success(f"🗑 {ticker_to_remove} verwijderd.")
+                    st.rerun()
 
-        # Export: toon huidige lijst om te kopiëren
-        with st.expander("📤 Export — kopieer mijn lijst", expanded=False):
-            export_str = ", ".join(st.session_state.main_market_tickers)
+        with tab_exp:
             st.text_area(
                 "Kopieer deze lijst en bewaar hem",
-                value=export_str,
+                value=", ".join(st.session_state.main_market_tickers),
                 height=120,
                 key="export_tickers_txt"
             )
             st.caption("💡 Plak dit de volgende keer bij 'Import' om je lijst te herstellen.")
 
-    with col_act:
-        st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("🔄 Refresh Data", key="btn_refresh_main"):
-            st.cache_data.clear()
-            st.rerun()
-        st.markdown(f"<small style='color:#848E9C;'>{len(st.session_state.main_market_tickers)} tickers</small>", unsafe_allow_html=True)
-
-    st.markdown("---")
-
-    # ── Data Ophalen & Tabel ──────────────────────────────────────────────────
+    # ── Data ophalen (parallel, met voortgangsbalk) ───────────────────────────
+    want_intra = not st.session_state.get('mobile_view', False)
     try:
-        _spinner_ph = st.empty()
-        main_df = build_main_table(tuple(st.session_state.main_market_tickers))
+        main_df, loaded_ts = load_main_df(tuple(st.session_state.main_market_tickers), want_intra)
     except Exception as _e:
-        st.error(f"❌ Fout in build_main_table: {type(_e).__name__}: {str(_e)}")
-        import traceback as _tb
-        st.code(_tb.format_exc())
-        main_df = pd.DataFrame()
+        st.error(f"❌ Fout bij laden van de hoofdtabel: {type(_e).__name__}: {_e}")
+        main_df, loaded_ts = pd.DataFrame(), time.time()
 
-    if not main_df.empty:
-        m1, m2, m3, m4 = st.columns(4)
-        try:
-            n_bodem   = len(main_df[main_df['Koers Status / Fase'].str.contains('Bodemfase', na=False)])
-            n_uptrend = len(main_df[main_df['Koers Status / Fase'].str.contains('Uptrend', na=False)])
-            n_herstel = len(main_df[main_df['Koers Status / Fase'].str.contains('Herstel', na=False)])
-            n_koop    = len(main_df[main_df['Actie'].str.contains('KOOPWAARDIG', na=False)])
-            m1.metric("⚡ Bodemfase", n_bodem)
-            m2.metric("🚀 Uptrend", n_uptrend)
-            m3.metric("🌱 Vroeg Herstel", n_herstel)
-            m4.metric("🟢 Koopwaardig", n_koop)
-        except Exception:
-            pass
-
-        st.markdown("<br>", unsafe_allow_html=True)
-
-        # ── Mobiel-vriendelijke tabelweergave ─────────────────────────────────
-        # Detecteer schermgrootte via URL-parameter of toon toggle
-        is_mobile = st.checkbox("📱 Compacte weergave (mobiel)", value=False, key="mobile_view")
-
-        if is_mobile:
-            # Compacte versie: alleen de meest essentiële kolommen
-            display_cols = [c for c in main_df.columns if not c.startswith('_')]
-            mobile_cols  = ['Ticker', 'Koers', 'RSI (14D)', 'Afwijking %', 'Actie']
-            mobile_cols  = [c for c in mobile_cols if c in display_cols]
-            mobile_df    = main_df[mobile_cols].copy()
-
-            def style_mobile(df):
-                def row_style(row):
-                    # Haal rij-data op uit originele df
-                    ticker_val = row.get('Ticker','')
-                    orig = main_df[main_df['Ticker'] == ticker_val]
-                    rsi_v = float(orig['_rsi_float'].iloc[0]) if not orig.empty else 50.0
-                    dev_v = float(orig['_dev_float'].iloc[0]) if not orig.empty else 999.0
-                    action = str(row.get('Actie',''))
-                    base   = 'background-color:#13171C;color:#E8ECEF;'
-                    styles = [base]*len(row)
-                    col_list = list(row.index)
-                    # RSI kleur
-                    if 'RSI (14D)' in col_list:
-                        idx = col_list.index('RSI (14D)')
-                        if rsi_v < TABLE_RSI_GREEN:   styles[idx]='background-color:#00843A;color:#FFF;font-weight:600;'
-                        elif rsi_v > TABLE_RSI_RED:   styles[idx]='background-color:#A32040;color:#FFF;font-weight:600;'
-                    # Afwijking kleur
-                    if 'Afwijking %' in col_list:
-                        idx = col_list.index('Afwijking %')
-                        if dev_v < TABLE_DEV_GREEN:   styles[idx]='background-color:#00843A;color:#FFF;font-weight:600;'
-                    # Actie kleur
-                    if 'Actie' in col_list:
-                        idx = col_list.index('Actie')
-                        if 'KOOPWAARDIG' in action:   styles[idx]='background-color:#00843A;color:#FFF;font-weight:700;'
-                        elif 'VOORZICHTIG' in action: styles[idx]='background-color:#A32040;color:#FFF;font-weight:600;'
-                        elif 'AANHOUDEN' in action:   styles[idx]='background-color:#1A1500;color:#F0B90B;font-weight:600;'
-                    return styles
-                s = df.style.apply(row_style, axis=1)
-                s.set_table_styles([
-                    {'selector':'thead th','props':[
-                        ('background-color','#0B0E11'),('color','#F0B90B'),
-                        ('font-size','0.75rem'),('padding','6px 8px'),
-                        ('border-bottom','2px solid #F0B90B')]},
-                    {'selector':'tbody td','props':[
-                        ('font-size','0.8rem'),('padding','5px 8px'),
-                        ('border-bottom','1px solid #2B3139')]}])
-                return s
-
-            st.dataframe(style_mobile(mobile_df), width='stretch', height=600)
-            st.caption("Toon alle kolommen → vink 'Compacte weergave' uit")
-        else:
-            st.dataframe(style_main_table(main_df), width='stretch', height=620)
-
-        # Deep Dive selectie
-        st.markdown("---")
-        sel_c1, sel_c2 = st.columns([3, 1])
-        with sel_c1:
-            selected_for_dive = st.selectbox(
-                "🔭 Selecteer ticker voor Deep Dive →",
-                options=main_df['Ticker'].tolist(),
-                index=0,
-                key="main_deep_dive_select"
-            )
-        with sel_c2:
-            st.markdown("<br>", unsafe_allow_html=True)
-            if st.button("📈 Open Deep Dive", key="btn_open_deep_dive_main"):
-                st.session_state.current_alpha = selected_for_dive
-                st.success(f"✅ {selected_for_dive} geladen → ga naar '📈 Deep Dive & Grafiek'")
+    if main_df.empty:
+        st.warning("Geen tickers in je lijst of geen data beschikbaar. Voeg tickers toe via ⚙️ Tickers beheren.")
     else:
-        st.warning("Geen data beschikbaar. Controleer je internetverbinding.")
+        ok_mask = main_df['_ok'] == True                                    # noqa: E712
+        bad_df  = main_df[~ok_mask]
+        age_s   = int(time.time() - loaded_ts)
+        st.caption(f"{int(ok_mask.sum())} van {len(main_df)} tickers geladen · "
+                   f"{'zojuist' if age_s < 10 else f'{age_s}s geleden'} bijgewerkt")
+
+        # ── Tickers zonder data: laat zien waarom, verwijder NIETS automatisch ──
+        if not bad_df.empty:
+            n_rl = int(bad_df['_err'].str.contains('rate-limit', na=False).sum())
+            with st.expander(f"⚠ {len(bad_df)} tickers zonder data" + (f" · {n_rl} door Yahoo rate-limit" if n_rl else ""),
+                             expanded=False):
+                if n_rl:
+                    st.info("Yahoo remde even af. Dit is tijdelijk: tik op 'Opnieuw proberen' — "
+                            "alleen de mislukte tickers worden dan opnieuw opgehaald.")
+                st.markdown('<br>'.join(
+                    f"<span style='font-family:monospace;'><b style='color:#F0B90B;'>{_esc(str(tk))}</b>"
+                    f" <span style='color:#848E9C;'>— {_esc(str(er))}</span></span>"
+                    for tk, er in zip(bad_df['Ticker'], bad_df['_err'])), unsafe_allow_html=True)
+                if st.button("🔁 Opnieuw proberen", key="btn_retry_failed"):
+                    st.session_state.pop('_main_cache', None)   # mislukte calls zijn niet gecachet
+                    st.rerun()
+                to_drop = st.multiselect("Uit mijn lijst verwijderen (alleen als je zeker weet dat ze niet meer bestaan)",
+                                         options=bad_df['Ticker'].tolist(), key="drop_bad_tickers")
+                if to_drop and st.button(f"🗑 Verwijder {len(to_drop)} ticker(s)", key="btn_drop_bad"):
+                    st.session_state.main_market_tickers = [
+                        t for t in st.session_state.main_market_tickers if t not in to_drop]
+                    _save_userdata()
+                    st.session_state.pop('_main_cache', None)
+                    st.rerun()
+
+        # ── KPI-tegels (2×2 op telefoon, 4 naast elkaar op desktop) ───────────
+        n_bodem   = int(main_df['Koers Status / Fase'].str.contains('Bodemfase', na=False).sum())
+        n_uptrend = int(main_df['Koers Status / Fase'].str.contains('Uptrend', na=False).sum())
+        n_herstel = int(main_df['Koers Status / Fase'].str.contains('Herstel', na=False).sum())
+        n_koop    = int(main_df['Actie'].str.contains('KOOPWAARDIG', na=False).sum())
+        st.markdown(render_kpis([
+            ("🟢 Koopwaardig", n_koop, 'g'), ("⚡ Bodemfase", n_bodem, ''),
+            ("🚀 Uptrend", n_uptrend, ''),   ("🌱 Vroeg herstel", n_herstel, ''),
+        ]), unsafe_allow_html=True)
+
+        # ── Filter · zoek · sorteer ───────────────────────────────────────────
+        try:
+            flt = st.pills("Filter", MAIN_FILTERS, default="Alles", key="main_filter",
+                           label_visibility="collapsed")
+        except Exception:                                  # oudere Streamlit zonder st.pills
+            flt = st.radio("Filter", MAIN_FILTERS, horizontal=True, key="main_filter_r",
+                           label_visibility="collapsed")
+        flt = flt or "Alles"
+
+        with st.container(key="qe_row_filter"):
+            _f1, _f2 = st.columns(2)
+            with _f1:
+                q = st.text_input("Zoek", placeholder="🔎 Zoek ticker", key="main_search",
+                                  label_visibility="collapsed")
+            with _f2:
+                sort_by = st.selectbox("Sorteer", MAIN_SORTS, key="main_sort", label_visibility="collapsed")
+
+        use_cards = st.toggle("📱 Kaartweergave", key="mobile_view",
+                              help="Aan: compacte kaarten (tik om uit te klappen). "
+                                   "Uit: volledige tabel met intraday-kolommen (15M/5M).")
+
+        view_df = filter_sort_main(main_df, flt, q, sort_by)
+        if len(view_df) != len(main_df):
+            st.caption(f"{len(view_df)} van {len(main_df)} tickers getoond")
+
+        if use_cards:
+            st.markdown(render_ticker_cards(view_df), unsafe_allow_html=True)
+        else:
+            if view_df.empty:
+                st.info("Geen tickers voor dit filter.")
+            else:
+                st.dataframe(style_main_table(view_df), width='stretch', hide_index=True,
+                             height=min(640, 60 + 36 * len(view_df)))
+
+        # ── Deep Dive selectie ────────────────────────────────────────────────
+        st.markdown("---")
+        dive_opts = main_df.loc[ok_mask, 'Ticker'].tolist() or main_df['Ticker'].tolist()
+        with st.container(key="qe_row_dive"):
+            sel_c1, sel_c2 = st.columns([3, 2])
+            with sel_c1:
+                selected_for_dive = st.selectbox(
+                    "🔭 Ticker voor Deep Dive",
+                    options=dive_opts,
+                    index=0,
+                    key="main_deep_dive_select"
+                )
+            with sel_c2:
+                st.markdown("<div style='height:1.7rem'></div>", unsafe_allow_html=True)
+                if st.button("📈 Open Deep Dive", key="btn_open_deep_dive_main"):
+                    st.session_state.current_alpha = selected_for_dive
+                    st.success(f"✅ {selected_for_dive} geladen → ga naar '📈 Deep Dive & Grafiek'")
 
     # ── WATCHLIST (ingebouwd in Tab 1 als expander) ───────────────────────────
     st.markdown("---")
@@ -3037,50 +3525,16 @@ with main_tabs[0]:
 
         if st.session_state.custom_watchlist:
             st.markdown("---")
+            _wl_items = list(st.session_state.custom_watchlist.items())
+            _wl_res   = _parallel_map(_wl_row, _wl_items)
             wl_rows = []
-            _wl_placeholder = st.empty()
-            for ticker, label in st.session_state.custom_watchlist.items():
-                    try:
-                        df_wl, info_wl = fetch_ticker_data(ticker, period=DATA_WL_PERIOD)
-                        if df_wl is None or len(df_wl) < DATA_MIN_ROWS_FETCH:
-                            wl_rows.append({'Ticker': ticker, 'Label': label, 'Koers': 'N/A',
-                                            'Dag %': 'N/A', 'RSI': 'N/A',
-                                            'Support': 'N/A', 'Weerstand': 'N/A',
-                                            'Afw. Support %': 'N/A',
-                                            'Gedetecteerd Patroon': '⚠ Geen Data'})
-                            continue
-
-                        cl  = df_wl['Close'].squeeze()
-                        lp  = round(float(cl.iloc[-1]), 2)
-
-                        currency_wl = info_wl.get('currency', '') if info_wl else ''
-                        sym_wl = '€' if currency_wl == 'EUR' else '$' if currency_wl == 'USD' else ''
-
-                        rsi_wl  = int(compute_rsi(cl, RSI_PERIOD))
-                        pat_wl  = detect_candlestick_pattern(df_wl)
-                        sup_wl, res_wl = compute_support_resistance(df_wl, SUPPORT_WINDOW, current_price=lp)
-                        dev_wl  = round(((lp - sup_wl) / sup_wl) * 100, 2) if sup_wl > 0 else 0.0
-
-                        day_chg = round(((cl.iloc[-1] - cl.iloc[-2]) / cl.iloc[-2]) * 100, 2) if len(cl) >= 2 else 0.0
-                        trend_str = f"{'▲' if day_chg >= 0 else '▼'} {abs(day_chg):.2f}%"
-
-                        wl_rows.append({
-                            'Ticker':             ticker,
-                            'Label':              label,
-                            'Koers':              f"{sym_wl}{lp:,.2f}",
-                            'Dag %':              trend_str,
-                            'RSI':                str(rsi_wl),
-                            'Support':            f"{sym_wl}{sup_wl:,.2f}",
-                            'Weerstand':          f"{sym_wl}{res_wl:,.2f}",
-                            'Afw. Support %':     f"{dev_wl:.2f}",
-                            'Gedetecteerd Patroon': pat_wl,
-                        })
-                    except Exception as e:
-                        wl_rows.append({'Ticker': ticker, 'Label': label, 'Koers': 'ERR',
-                                        'Dag %': 'ERR', 'RSI': 'ERR',
-                                        'Support': 'ERR', 'Weerstand': 'ERR',
-                                        'Afw. Support %': 'ERR',
-                                        'Gedetecteerd Patroon': f'⚠ {str(e)[:40]}'})
+            for _it in _wl_items:
+                _r = _wl_res.get(_it)
+                if not isinstance(_r, dict):
+                    _r = {'Ticker': _it[0], 'Label': _it[1], 'Koers': 'ERR', 'Dag %': 'ERR', 'RSI': 'ERR',
+                          'Support': 'ERR', 'Weerstand': 'ERR', 'Afw. Support %': 'ERR',
+                          'Gedetecteerd Patroon': '⚠ Tijdelijk niet beschikbaar'}
+                wl_rows.append(_r)
 
             if wl_rows:
                 wl_df = pd.DataFrame(wl_rows)
@@ -3139,11 +3593,11 @@ with main_tabs[0]:
 
                 wl_mobile = st.session_state.get('mobile_view', False)
                 if wl_mobile:
-                    wl_mobile_cols = ['Ticker', 'Koers', 'RSI', 'Afw%', 'Gedetecteerd Patroon']
+                    wl_mobile_cols = ['Ticker', 'Koers', 'Dag %', 'RSI', 'Afw. Support %', 'Gedetecteerd Patroon']
                     wl_mobile_cols = [c for c in wl_mobile_cols if c in wl_df.columns]
-                    st.dataframe(style_wl(wl_df[wl_mobile_cols]), width='stretch', height=300)
+                    st.dataframe(style_wl(wl_df[wl_mobile_cols]), width='stretch', height=300, hide_index=True)
                 else:
-                    st.dataframe(style_wl(wl_df), width='stretch', height=300)
+                    st.dataframe(style_wl(wl_df), width='stretch', height=300, hide_index=True)
 
                 bullish_n = sum(1 for r in wl_rows if 'Bullish' in str(r.get('Gedetecteerd Patroon', '')))
                 if bullish_n > 0:
@@ -3151,14 +3605,12 @@ with main_tabs[0]:
                 else:
                     st.info("Geen bullish patronen op dit moment.")
 
-    st.markdown('</div>', unsafe_allow_html=True)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
 # TAB 2: MULTI-STRATEGIE SCANNER
 # ═════════════════════════════════════════════════════════════════════════════
 with main_tabs[1]:
-    st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.markdown("### 🔍 Multi-Strategie Scanner — 600+ Tickers")
     st.markdown('<small style="color:#848E9C;">S&P 500 · S&P MidCap 400 · Europese Top · Multi-Timeframe Validatie</small>', unsafe_allow_html=True)
 
@@ -3306,6 +3758,10 @@ with main_tabs[1]:
 
             if st.button("▶ Start Scan", key="btn_start_scan"):
                 st.session_state['scan_running'] = True
+                try:
+                    st.session_state['lm_active'] = False     # auto-refresh uit tijdens de scan
+                except Exception:
+                    pass
                 pool = load_ticker_pool(use_large_pool=use_large)
                 st.info(f"🔍 Scan gestart: **{len(pool)} tickers** worden doorlopen...")
                 results = run_scanner(st.session_state.active_strategy, pool)
@@ -3399,316 +3855,118 @@ with main_tabs[1]:
     else:
         st.info("👆 Selecteer een strategie hierboven om te beginnen met scannen.")
 
-    st.markdown('</div>', unsafe_allow_html=True)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
 # TAB 4: LIVE MONITOR — Real-time tracking van vastgepinde tickers
 # ═════════════════════════════════════════════════════════════════════════════
+def refresh_live_data() -> None:
+    """Wis alleen de snelle caches (live prijs + intraday); de hoofdtabel blijft ongemoeid."""
+    for fn in (fetch_live_price, fetch_intraday_patterns, compute_15m_mean_reversion):
+        try:
+            fn.clear()
+        except Exception:
+            pass
+
+
+def _live_view() -> None:
+    """
+    Live Monitor-weergave. Draait als st.fragment: bij auto-refresh wordt ALLEEN dit blok
+    opnieuw uitgevoerd — de rest van de app (en de rest van de pagina) blijft staan.
+    """
+    pinned = tuple(st.session_state.get('pinned_tickers', []))
+    if not pinned:
+        st.info("📌 Geen tickers vastgezet. Pin tickers via de Scanner of voeg ze hierboven toe.")
+        return
+
+    lm_df = add_intraday_columns(build_main_table(pinned))
+    st.markdown(
+        f"<div style='font-family:JetBrains Mono,monospace;font-size:.75rem;color:#848E9C;margin:4px 0 10px;'>"
+        f"Bijgewerkt <b style='color:#F0B90B;'>{_now_nl():%H:%M:%S}</b> · {len(pinned)} tickers</div>",
+        unsafe_allow_html=True)
+
+    if st.session_state.get('mobile_view', False):
+        st.markdown(render_ticker_cards(lm_df), unsafe_allow_html=True)
+    else:
+        cols = ['Ticker', 'Koers', 'Dag %', 'RSI (14D)', 'Support (30D)', 'Weerstand (30D)', 'Afwijking %',
+                '15M MR Status', '15M [0]', '5M [0]', 'Koers Status / Fase', 'Actie',
+                '_rsi_float', '_dev_float', '_ext_chg', '_day_chg']
+        st.dataframe(style_main_table(lm_df[[c for c in cols if c in lm_df.columns]]),
+                     width='stretch', hide_index=True, height=min(600, 60 + len(lm_df) * 38))
+
+
 with main_tabs[3]:
-    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    # ── Titel ─────────────────────────────────────────────────────────────────
+    st.markdown("### 📡 Live Monitor")
+    st.caption("Vastgepinde tickers · 15M mean reversion · after-hours · "
+               "auto-refresh ververst alleen dit blok")
 
-    # ── Header ────────────────────────────────────────────────────────────────
-    lm_h1, lm_h2 = st.columns([3, 1])
-    with lm_h1:
-        st.markdown("### 📡 Live Monitor — Real-Time Prijsactie")
-        st.markdown('<small style="color:#848E9C;">Vastgepinde tickers · Auto-refresh · 15M MR Status · After-hours</small>', unsafe_allow_html=True)
-    with lm_h2:
-        n_pinned = len(st.session_state['pinned_tickers'])
-        st.metric("📌 Vastgezet", n_pinned)
+    # ── Besturing ─────────────────────────────────────────────────────────────
+    with st.container(key="qe_row_lm1"):
+        _l1, _l2 = st.columns(2)
+        with _l1:
+            refresh_interval = st.selectbox(
+                "Interval",
+                options=[30, 60, 120, 300],
+                format_func=lambda x: f"Elke {x}s" if x < 60 else f"Elke {x//60} min",
+                index=1,
+                key="lm_refresh_interval",
+            )
+        with _l2:
+            st.markdown("<div style='height:1.7rem'></div>", unsafe_allow_html=True)
+            monitor_active = st.toggle(
+                "▶ Auto-refresh", value=False, key="lm_active",
+                help="Ververst alleen de Live Monitor. Zet dit UIT voordat je een Scanner-scan "
+                     "start: een ververs-actie tijdens een lopende scan kan die onderbreken.")
 
-    st.markdown("---")
-
-    # ── Auto-refresh configuratie ─────────────────────────────────────────────
-    try:
-        from streamlit_autorefresh import st_autorefresh
-        autorefresh_available = True
-    except ImportError:
-        autorefresh_available = False
-
-    ctrl1, ctrl2, ctrl3 = st.columns([1, 1, 2])
-    with ctrl1:
-        refresh_interval = st.selectbox(
-            "🔄 Refresh interval",
-            options=[15, 30, 60, 120, 300],
-            format_func=lambda x: f"{x}s" if x < 60 else f"{x//60}m",
-            index=1,
-            key="lm_refresh_interval"
-        )
-    with ctrl2:
-        st.markdown("<br>", unsafe_allow_html=True)
-        # BUGFIX: default was True — dit herstart het VOLLEDIGE Streamlit-script
-        # elke {refresh_interval} seconden, ook als een Scanner-scan nog loopt.
-        # Een lopende run_scanner()-loop wordt daardoor halverwege weggegooid
-        # zonder foutmelding — dit was de hoofdoorzaak van "de scan stopt abrupt".
-        monitor_active = st.toggle("▶ Auto-refresh AAN", value=False, key="lm_active",
-                                    help="⚠ Zet dit UIT voordat je een Scanner-scan start! "
-                                         "Auto-refresh herstart de volledige app, wat een "
-                                         "lopende scan halverwege afbreekt.")
-    with ctrl3:
-        st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("🔄 Nu vernieuwen", key="btn_lm_manual_refresh"):
-            st.cache_data.clear()
-            st.rerun()
-
-    if monitor_active:
-        st.warning(
-            "⚠ Auto-refresh staat AAN. Zolang dit actief is, herstart de hele app "
-            "elke paar seconden — start GEEN scan in de Scanner-tab terwijl dit aan staat, "
-            "want de scan wordt dan halverwege afgebroken.",
-            icon="⚠️"
-        )
-
-    # ── Harde beveiliging: blokkeer autorefresh als een scan loopt ───────────
-    # run_scanner() draait synchroon binnen één script-uitvoering, maar deze
-    # vlag voorkomt ook randgevallen (bv. snelle tab-wissel tijdens caching).
     _scan_in_progress = st.session_state.get('scan_running', False)
     if _scan_in_progress:
         monitor_active = False
-        st.error("⛔ Auto-refresh tijdelijk geblokkeerd: er loopt momenteel een scan in de Scanner-tab.")
+        st.warning("⛔ Auto-refresh pauzeert zolang er een scan loopt.")
 
-    # Auto-refresh via streamlit-autorefresh indien beschikbaar
-    if autorefresh_available and monitor_active:
-        count = st_autorefresh(
-            interval=refresh_interval * 1000,
-            limit=None,
-            key="live_monitor_refresh"
-        )
-    else:
-        if monitor_active and not autorefresh_available:
-            st.caption("⚠ streamlit-autorefresh niet beschikbaar — gebruik 'Nu vernieuwen'")
+    if st.button("🔄 Nu vernieuwen", key="btn_lm_manual_refresh"):
+        refresh_live_data()
 
-    # ── Ticker beheer ──────────────────────────────────────────────────────────
-    lm_add1, lm_add2, lm_add3 = st.columns([2, 1, 1])
-    with lm_add1:
-        manual_pin = st.text_input(
-            "➕ Ticker handmatig toevoegen",
-            placeholder="bijv. NVDA, AMD, TSLA...",
-            key="lm_manual_pin_input"
-        )
-    with lm_add2:
-        st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("📌 Vastzetten", key="btn_lm_add"):
-            t = manual_pin.strip().upper()
-            if t and t not in st.session_state['pinned_tickers']:
-                st.session_state['pinned_tickers'].append(t)
-                st.rerun()
-    with lm_add3:
-        st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("🗑 Alles verwijderen", key="btn_lm_clear"):
-            st.session_state['pinned_tickers'] = []
-            st.rerun()
-
-    # ── Live tabel ────────────────────────────────────────────────────────────
-    if not st.session_state['pinned_tickers']:
-        st.info("📌 Geen tickers vastgezet. Pin tickers via de Scanner of voeg ze hierboven toe.")
-    else:
-        pinned = st.session_state['pinned_tickers']
-
-        # Tijdstempel laatste update
-        now_str = pd.Timestamp.now().strftime("%H:%M:%S")
-        st.markdown(
-            f"<div style='font-family:monospace;font-size:0.75rem;color:#848E9C;"
-            f"margin-bottom:8px;'>Laatste update: <b style='color:#F0B90B;'>{now_str}</b>"
-            f" · {len(pinned)} tickers · interval: {refresh_interval}s</div>",
-            unsafe_allow_html=True
-        )
-
-        # ── Data ophalen per ticker ───────────────────────────────────────────
-        @st.cache_data(ttl=refresh_interval)
-        def fetch_live_monitor_row(ticker: str) -> dict:
-            """Haal alle live data op voor één ticker — gecached op refresh_interval."""
-            row = {
-                'Ticker': ticker, 'Koers': '–', 'Δ Dag%': '–', 'RSI': '–',
-                'Support': '–', 'Weerstand': '–', 'Afw%': '–',
-                '15M MR': '–', '15M [0]': '–', '5M [0]': '–',
-                'Fase': '–', 'Actie': '–',
-                '_rsi': 50.0, '_dev': 999.0, '_ext_chg': None,
-                '_action': '', '_mr_dir': '',
-            }
-            try:
-                df, info = fetch_ticker_data(ticker, period='5d')
-                if df is None or len(df) < 3:
-                    return row
-
-                close = df['Close'].squeeze()
-                lp    = float(close.iloc[-1])
-                prev  = float(close.iloc[-2]) if len(close) >= 2 else lp
-                dc    = round((lp - prev) / prev * 100, 2) if prev > 0 else 0.0
-                rsi_v = compute_rsi(close)
-                sup, res = compute_support_resistance(df, SUPPORT_WINDOW, current_price=lp)
-                dev   = round((lp - sup) / sup * 100, 2) if sup > 0 else 0.0
-                pat   = detect_candlestick_pattern(df)
-                phase = determine_phase(rsi_v, dev, pat)
-                act   = determine_action(rsi_v, dev, pat, phase)
-
-                cur = info.get('currency', '') if info else ''
-                sym = '€' if cur == 'EUR' else '$' if cur == 'USD' else ''
-
-                # Live prijs incl. extended hours
-                live = fetch_live_price(ticker)
-                dp   = live['price'] if live['price'] else lp
-                mp   = live['market_phase']
-                ce   = live['change_ext']
-
-                badge = ''
-                if mp == 'AFTER-HOURS': badge = ' 🌙'
-                elif mp == 'PRE-MARKET': badge = ' 🌅'
-
-                koers_str = f"{sym}{dp:,.2f}{badge}"
-                dc_str    = f"{'▲' if dc >= 0 else '▼'}{abs(dc):.2f}%"
-
-                # Intraday
-                intra = fetch_intraday_patterns(ticker)
-                mr15  = compute_15m_mean_reversion(ticker)
-
-                row.update({
-                    'Ticker':   ticker,
-                    'Koers':    koers_str,
-                    'Δ Dag%':   dc_str,
-                    'RSI':      str(int(rsi_v)) if not math.isnan(rsi_v) else 'N/A',
-                    'Support':  f"{sym}{sup:,.2f}",
-                    'Weerstand':f"{sym}{res:,.2f}",
-                    'Afw%':     f"{dev:.2f}",
-                    '15M MR':   mr15['status'],
-                    '15M [0]':  intra['15M[0]'],
-                    '5M [0]':   intra['5M[0]'],
-                    'Fase':     phase,
-                    'Actie':    act,
-                    '_rsi':     float(rsi_v) if not math.isnan(rsi_v) else 50.0,
-                    '_dev':     dev,
-                    '_ext_chg': ce,
-                    '_action':  act,
-                    '_mr_dir':  mr15.get('direction') or '',
-                })
-            except Exception:
-                pass
-            return row
-
-        # Haal alle rijen op
-        lm_rows = [fetch_live_monitor_row(t) for t in pinned]
-
-        # ── Render als kaartjes (compacter dan tabel op mobiel) ───────────────
-        use_cards = st.session_state.get('mobile_view', False)
-
-        if use_cards:
-            # Mobiele kaartjes weergave
-            for r in lm_rows:
-                action = r['_action']
-                mr_dir = r['_mr_dir']
-                if 'KOOPWAARDIG' in action:   card_border = '#00C853'
-                elif 'VOORZICHTIG' in action:  card_border = '#F6465D'
-                elif 'BULLISH' in mr_dir:      card_border = '#00C853'
-                elif 'BEARISH' in mr_dir:      card_border = '#F6465D'
-                else:                          card_border = '#2B3139'
-
-                mr_color = '#00C853' if 'BULLISH' in r['15M MR'] else '#F6465D' if 'BEARISH' in r['15M MR'] else '#848E9C'
-
-                st.markdown(f"""
-                <div style="background:#13171C;border:1px solid {card_border};border-left:4px solid {card_border};
-                            border-radius:6px;padding:10px 14px;margin-bottom:8px;">
-                  <div style="display:flex;justify-content:space-between;align-items:center;">
-                    <b style="color:#F0B90B;font-size:1.1rem;">{r['Ticker']}</b>
-                    <span style="color:#E8ECEF;font-size:1.1rem;">{r['Koers']}</span>
-                    <span style="color:{'#00C853' if '▲' in r['Δ Dag%'] else '#F6465D'};">{r['Δ Dag%']}</span>
-                  </div>
-                  <div style="display:flex;gap:12px;margin-top:6px;font-size:0.78rem;">
-                    <span style="color:#848E9C;">RSI: <b style="color:#E8ECEF;">{r['RSI']}</b></span>
-                    <span style="color:#848E9C;">Afw: <b style="color:#E8ECEF;">{r['Afw%']}%</b></span>
-                    <span style="color:#848E9C;">Actie: <b style="color:{'#00C853' if 'KOOPWAARDIG' in r['Actie'] else '#F6465D' if 'VOORZICHTIG' in r['Actie'] else '#F0B90B'};">{r['Actie']}</b></span>
-                  </div>
-                  <div style="margin-top:4px;font-size:0.72rem;color:{mr_color};">{r['15M MR']}</div>
-                </div>""", unsafe_allow_html=True)
-        else:
-            # Desktop tabel-weergave
-            lm_df = pd.DataFrame(lm_rows)
-            display_cols = ['Ticker','Koers','Δ Dag%','RSI','Support','Weerstand',
-                            'Afw%','15M MR','15M [0]','5M [0]','Fase','Actie']
-            display_cols = [c for c in display_cols if c in lm_df.columns]
-            lm_display = lm_df[display_cols].copy()
-
-            def style_lm(df):
-                def rs(row):
-                    base  = f'background-color:#13171C;color:#E8ECEF;'
-                    styles= [base]*len(row)
-                    cl    = list(row.index)
-
-                    action= str(row.get('Actie',''))
-                    mr    = str(row.get('15M MR',''))
-                    dc    = str(row.get('Δ Dag%',''))
-                    orig  = lm_df[lm_df['Ticker']==row.get('Ticker','')]
-                    rsi_f = float(orig['_rsi'].iloc[0]) if not orig.empty else 50.0
-                    dev_f = float(orig['_dev'].iloc[0]) if not orig.empty else 999.0
-
-                    # Dag% kleur
-                    if 'Δ Dag%' in cl:
-                        idx=cl.index('Δ Dag%')
-                        styles[idx]= f'background-color:#13171C;color:{"#00C853" if "▲" in dc else "#F6465D"};font-weight:600;'
-
-                    # RSI
-                    if 'RSI' in cl:
-                        idx=cl.index('RSI')
-                        if rsi_f < TABLE_RSI_GREEN:   styles[idx]='background-color:#00843A;color:#FFF;font-weight:600;'
-                        elif rsi_f > TABLE_RSI_RED:   styles[idx]='background-color:#A32040;color:#FFF;font-weight:600;'
-
-                    # Afw%
-                    if 'Afw%' in cl:
-                        idx=cl.index('Afw%')
-                        if dev_f < TABLE_DEV_GREEN:   styles[idx]='background-color:#00843A;color:#FFF;font-weight:600;'
-
-                    # Support/Weerstand
-                    if 'Support'   in cl: styles[cl.index('Support')]   = 'color:#64B5F6;'
-                    if 'Weerstand' in cl: styles[cl.index('Weerstand')] = 'color:#CE93D8;'
-
-                    # 15M MR
-                    if '15M MR' in cl:
-                        idx=cl.index('15M MR')
-                        if 'BULLISH REVERSION' in mr and '✅' in mr:
-                            styles[idx]='background-color:#00843A;color:#FFF;font-weight:700;font-size:0.72rem;'
-                        elif 'BULLISH REVERSION' in mr:
-                            styles[idx]='background-color:#0D2818;color:#00C853;font-weight:600;font-size:0.72rem;'
-                        elif 'BEARISH REVERSION' in mr and '✅' in mr:
-                            styles[idx]='background-color:#A32040;color:#FFF;font-weight:700;font-size:0.72rem;'
-                        elif 'BEARISH REVERSION' in mr:
-                            styles[idx]='background-color:#1A0008;color:#F6465D;font-weight:600;font-size:0.72rem;'
-                        elif 'SETUP' in mr:
-                            styles[idx]='background-color:#1A1500;color:#F0B90B;font-size:0.72rem;'
-
-                    # Actie
-                    if 'Actie' in cl:
-                        idx=cl.index('Actie')
-                        if 'KOOPWAARDIG' in action:   styles[idx]='background-color:#00843A;color:#FFF;font-weight:700;'
-                        elif 'VOORZICHTIG' in action: styles[idx]='background-color:#A32040;color:#FFF;font-weight:600;'
-                        elif 'AANHOUDEN' in action:   styles[idx]='background-color:#1A1500;color:#F0B90B;font-weight:600;'
-                    return styles
-
-                return df.style.apply(rs, axis=1)
-
-            st.dataframe(style_lm(lm_display), width='stretch', height=min(600, 60+len(lm_rows)*38))
-
-        # ── Ticker verwijderen ─────────────────────────────────────────────────
-        st.markdown("---")
-        rm1, rm2 = st.columns([3, 1])
-        with rm1:
-            to_remove = st.selectbox(
-                "🗑 Ticker losmaken",
-                options=["— Selecteer —"] + list(st.session_state['pinned_tickers']),
-                key="lm_remove_select"
-            )
-        with rm2:
-            st.markdown("<br>", unsafe_allow_html=True)
-            if st.button("Verwijderen", key="btn_lm_remove"):
-                if to_remove != "— Selecteer —":
-                    st.session_state['pinned_tickers'].remove(to_remove)
+    # ── Ticker beheer ─────────────────────────────────────────────────────────
+    with st.expander("📌 Tickers vastzetten / losmaken", expanded=not st.session_state['pinned_tickers']):
+        with st.container(key="qe_row_lm2"):
+            _a1, _a2 = st.columns([3, 2])
+            with _a1:
+                manual_pin = st.text_input("Ticker", placeholder="bijv. NVDA, AMD, TSLA…",
+                                           key="lm_manual_pin_input", label_visibility="collapsed")
+            with _a2:
+                if st.button("📌 Vastzetten", key="btn_lm_add"):
+                    t = manual_pin.strip().upper()
+                    if t and t not in st.session_state['pinned_tickers']:
+                        st.session_state['pinned_tickers'].append(t)
+                        st.rerun()
+        if st.session_state['pinned_tickers']:
+            to_remove = st.selectbox("Ticker losmaken",
+                                     options=["— Selecteer —"] + list(st.session_state['pinned_tickers']),
+                                     key="lm_remove_select")
+            _b1, _b2 = st.columns(2)
+            with _b1:
+                if st.button("Losmaken", key="btn_lm_remove"):
+                    if to_remove != "— Selecteer —":
+                        st.session_state['pinned_tickers'].remove(to_remove)
+                        st.rerun()
+            with _b2:
+                if st.button("🗑 Alles wissen", key="btn_lm_clear"):
+                    st.session_state['pinned_tickers'] = []
                     st.rerun()
 
-    st.markdown('</div>', unsafe_allow_html=True)
+    # ── Live blok (fragment) ──────────────────────────────────────────────────
+    _every = refresh_interval if monitor_active else None
+    if hasattr(st, "fragment"):
+        st.fragment(run_every=_every)(_live_view)()
+    else:                                    # zeer oude Streamlit: eenmalig renderen
+        _live_view()
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 # TAB 3: DEEP DIVE & INTERACTIEVE GRAFIEK
 # ═════════════════════════════════════════════════════════════════════════════
 with main_tabs[2]:
-    st.markdown('<div class="section-card">', unsafe_allow_html=True)
 
     active_ticker = st.session_state.current_alpha
     st.markdown(f"### 📈 Deep Dive: <span style='color:#F0B90B;'>{active_ticker}</span>", unsafe_allow_html=True)
@@ -3787,13 +4045,16 @@ with main_tabs[2]:
             _delta_dd  = None
             _koers_lbl = f"{_sym_dd}{_disp_dd:,.2f}"
 
-        mc1, mc2, mc3, mc4, mc5, mc6 = st.columns(6)
-        mc1.metric(f"💰 Koers ({_badge_dd})", _koers_lbl, delta=_delta_dd)
-        mc2.metric("📊 RSI (14D)",       f"{int(rsi_dd)}"                                       if not np.isnan(rsi_dd)      else "N/A")
-        mc3.metric("🟢 Support 30D",     f"{_sym_dd}{support_dd:,.2f}"    if not math.isnan(support_dd)    else "N/A")
-        mc4.metric("🔴 Resistance 30D",  f"{_sym_dd}{resistance_dd:,.2f}" if not math.isnan(resistance_dd) else "N/A")
-        mc5.metric("📐 Afwijking",       f"{deviation_dd:.2f}%"            if not math.isnan(deviation_dd)  else "N/A")
-        mc6.metric("📡 Marktfase",       _phase_dd)
+        _fmt = lambda v, f: f.format(v) if (v is not None and not (isinstance(v, float) and math.isnan(v))) else "N/A"
+        _kpi_html = render_kpis([
+            (f"💰 Koers ({_badge_dd})", _koers_lbl + (f"  ({_delta_dd})" if _delta_dd else ''), ''),
+            ("📊 RSI (14D)", f"{int(rsi_dd)}" if not np.isnan(rsi_dd) else "N/A", ''),
+            ("🟢 Support 30D", _sym_dd + _fmt(support_dd, "{:,.2f}") if not math.isnan(support_dd) else "N/A", 'g'),
+            ("🔴 Weerstand 30D", _sym_dd + _fmt(resistance_dd, "{:,.2f}") if not math.isnan(resistance_dd) else "N/A", 'r'),
+            ("📐 Afwijking", f"{deviation_dd:.2f}%" if not math.isnan(deviation_dd) else "N/A", ''),
+            ("📡 Marktfase", _phase_dd, ''),
+        ]).replace('class="qe-kpis"', 'class="qe-kpis n6"')
+        st.markdown(_kpi_html, unsafe_allow_html=True)
 
         st.markdown("<br>", unsafe_allow_html=True)
 
@@ -3836,9 +4097,14 @@ with main_tabs[2]:
                 fixedrange=False,
             )})
 
+        _mob_chart = st.session_state.get('mobile_view', False)
+        if _mob_chart:
+            # Telefoon: één vinger scrolt de pagina i.p.v. de grafiek te verslepen
+            fig.update_layout(dragmode=False, height=560, margin=dict(l=6, r=48, t=36, b=6),
+                              legend=dict(font=dict(size=9)))
         st.plotly_chart(fig, width='stretch', config={
-            'scrollZoom':           True,       # Scrollwiel = zoom (zoals TradingView)
-            'displayModeBar':       True,
+            'scrollZoom':           not _mob_chart,       # Scrollwiel = zoom (zoals TradingView)
+            'displayModeBar':       not _mob_chart,
             'modeBarButtonsToRemove': ['toImage', 'lasso2d', 'select2d'],
             'modeBarButtonsToAdd':  [
                 'drawline',         # Trendlijn tekenen
@@ -4180,7 +4446,6 @@ with main_tabs[2]:
                 except Exception:
                     st.info(f"📭 Geen nieuws beschikbaar voor {active_ticker}.")
 
-    st.markdown('</div>', unsafe_allow_html=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
