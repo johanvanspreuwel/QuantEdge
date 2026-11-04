@@ -368,9 +368,11 @@ st.markdown("""
   .qe-ph { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: .7rem; font-weight: 700; color: #0B0E11; white-space: nowrap; }
   .qe-tr-row { display: grid; grid-template-columns: 22px minmax(0,1fr) 72px 46px 46px; align-items: center; gap: 6px; padding: 7px 4px; border-top: 1px solid rgba(255,255,255,.05); font-size: .82rem; }
   .qe-tr-row.hd { border-top: 0; font-size: .66rem; text-transform: uppercase; letter-spacing: .6px; color: var(--text-muted); padding-top: 2px; }
+  .qe-tr-row.mem { grid-template-columns: 18px minmax(0,1fr) 44px 54px 58px; }
+  .qe-tr-row.mem .n { color: var(--text-muted); font-size: .72rem; text-align: right; }
   .qe-tr-row.hd .t { color: var(--text-muted); font-weight: 400; }
   .qe-tr-row.sel { background: rgba(240,185,11,.07); border-radius: 8px; }
-  .qe-tr-row .t { color: #F4F6F8; font-weight: 600; line-height: 1.15; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .qe-tr-row .t { color: #F4F6F8; font-weight: 600; line-height: 1.15; overflow: hidden; overflow-wrap: anywhere; }
   .qe-tr-row .t small { display: block; font-weight: 400; font-size: .68rem; color: var(--text-muted); }
   .qe-tr-row .v { text-align: right; font-family: 'JetBrains Mono', monospace; font-size: .76rem; }
 
@@ -4135,7 +4137,7 @@ def _fetch_sector(ticker: str) -> str:
     raise ValueError("geen sector")
 
 
-def sector_map(tickers, max_lookups: int = 200) -> dict:
+def sector_map(tickers, max_lookups: int = 200, lookup: bool = True) -> dict:
     """{ticker: sectornaam}. Eigen lijst eerst; de rest via Yahoo (parallel, eenmalig per sessie)."""
     out, todo = {}, []
     miss = st.session_state.setdefault('_sector_miss', set())
@@ -4148,7 +4150,7 @@ def sector_map(tickers, max_lookups: int = 200) -> dict:
             out[t] = SECTOR_SEED[t]
         elif t.upper() in wiki:
             out[t] = wiki[t.upper()]
-        elif t in miss:
+        elif t in miss or not lookup:
             out[t] = 'Onbekend'
         else:
             todo.append(t)
@@ -4275,11 +4277,8 @@ def _naive_index(df: pd.DataFrame) -> pd.DatetimeIndex:
     return idx.normalize()
 
 
-def compute_sector_trends(hist: dict, sectors: dict) -> dict:
-    """hist {ticker: dagkoersen-DataFrame}, sectors {ticker: sector} →
-    {sector: {'index', 'phase', 'mix', 'n', 'ret'}}.
-    'index' = gelijk gewogen sectorindex (start 100), 'phase' = scanner-fase van die index per dag,
-    'mix' = aandeel tickers per fase per dag (kolommen 0..3)."""
+def build_trend_panels(hist: dict):
+    """{ticker: DataFrame} → (close_df, code_df): koersen en scanner-fase per dag, kolom per ticker."""
     closes, codes = {}, {}
     for t, df in hist.items():
         try:
@@ -4293,13 +4292,21 @@ def compute_sector_trends(hist: dict, sectors: dict) -> dict:
         except Exception:
             continue
     if not closes:
-        return {}
-    close_df = pd.DataFrame(closes).sort_index().ffill(limit=3)
-    ret_df   = close_df / close_df.shift(1) - 1
-    code_df  = pd.DataFrame(codes).reindex(close_df.index)
+        return pd.DataFrame(), pd.DataFrame()
+    close_df = pd.DataFrame(closes).sort_index().ffill(limit=3).astype('float32')
+    code_df  = pd.DataFrame(codes).reindex(close_df.index).astype('float32')
+    return close_df, code_df
 
+
+def trends_from_panels(close_df: pd.DataFrame, code_df: pd.DataFrame, sectors: dict) -> dict:
+    """→ {sector: {'index', 'phase', 'mix', 'n', 'tickers', 'ret'}}.
+    'index' = gelijk gewogen sectorindex (start 100), 'phase' = scanner-fase van die index per dag,
+    'mix' = aandeel tickers per fase per dag (kolommen 0..3)."""
+    if close_df is None or close_df.empty:
+        return {}
+    ret_df = close_df / close_df.shift(1) - 1
     by_sec = {}
-    for t in closes:
+    for t in close_df.columns:
         by_sec.setdefault(sectors.get(t, 'Onbekend'), []).append(t)
 
     out = {}
@@ -4319,8 +4326,49 @@ def compute_sector_trends(hist: dict, sectors: dict) -> dict:
         ret   = {}
         for lab, d in (('1M', 21), ('3M', 63), ('6M', 126)):
             ret[lab] = float(index.iloc[-1] / index.iloc[-1 - d] * 100 - 100) if len(index) > d else np.nan
-        out[sec] = {'index': index, 'phase': phase, 'mix': mix, 'n': len(cols), 'ret': ret}
+        out[sec] = {'index': index, 'phase': phase, 'mix': mix, 'n': len(cols), 'tickers': cols, 'ret': ret}
     return out
+
+
+def compute_sector_trends(hist: dict, sectors: dict) -> dict:
+    close_df, code_df = build_trend_panels(hist)
+    return trends_from_panels(close_df, code_df, sectors)
+
+
+def sector_members(close_df: pd.DataFrame, code_df: pd.DataFrame, tickers: list,
+                   sector_index: pd.Series, days: int) -> pd.DataFrame:
+    """Per ticker van een sector: hoe goed volgt hij de sectortrend over de laatste `days` handelsdagen?
+    - Gelijkloop: correlatie van zijn dagrendement met de rest van de sector (zonder zichzelf)
+    - Rend.: koersverandering over de periode; Vs sector: verschil met de sectorindex (procentpunt)
+    - Trend-score 0–100: 50% gelijkloop + 50% positie in de rangorde van rendement binnen de sector."""
+    cols = [t for t in tickers if t in close_df.columns]
+    if not cols:
+        return pd.DataFrame()
+    win = close_df[cols].iloc[-(days + 1):]
+    ret = win / win.shift(1) - 1
+    ret = ret.iloc[1:]
+    tot, cnt = ret.sum(axis=1, skipna=True), ret.notna().sum(axis=1)
+    si = sector_index.iloc[-(days + 1):]
+    sec_ret = float(si.iloc[-1] / si.iloc[0] * 100 - 100) if len(si) > 1 else np.nan
+    rows = []
+    for t in cols:
+        r = ret[t]
+        if r.notna().sum() < 40:
+            continue
+        loo = (tot - r.fillna(0)) / (cnt - r.notna()).replace(0, np.nan)
+        corr = r.corr(loo, min_periods=40)
+        px = win[t].dropna()
+        if len(px) < 2:
+            continue
+        ph = code_df[t].dropna() if t in code_df.columns else pd.Series(dtype=float)
+        rows.append({'Ticker': t, 'corr': corr, 'ret': float(px.iloc[-1] / px.iloc[0] * 100 - 100),
+                     'phase': int(ph.iloc[-1]) if len(ph) else 0})
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    df['vs'] = df['ret'] - sec_ret
+    df['score'] = 100 * (0.5 * df['corr'].fillna(0).clip(0, 1) + 0.5 * df['ret'].rank(pct=True))
+    return df
 
 
 def _runs(codes) -> list:
@@ -4443,6 +4491,30 @@ def render_sector_trend_card(name: str, tr: dict, days: int) -> str:
             f'<div class="t-r">{rets}</div>{_trend_svg(idx, ph, mix)}<div class="t-lg">{legend}</div></div>')
 
 
+TREND_SORTS = {"Trend-score": "score", "Gelijkloop": "corr", "Rend. vs sector": "vs"}
+
+
+def render_sector_members(df: pd.DataFrame, name: str, sort_col: str = "score", top: int = 10) -> str:
+    """Lijst tickers van één sector, gerangschikt op hoe goed ze de sectortrend volgen."""
+    if df is None or df.empty:
+        return ''
+    d = df.sort_values(sort_col, ascending=False, na_position='last')
+    shown = d.head(top) if top else d
+    rows = []
+    for rank, (_, r) in enumerate(shown.iterrows(), 1):
+        corr = '–' if pd.isna(r['corr']) else f'{r["corr"] * 100:.0f}%'
+        rows.append(
+            f'<div class="qe-tr-row mem"><span class="n">{rank}</span>'
+            f'<span class="t">{_esc(str(r["Ticker"]))}<small>{PHASE_ICONS[int(r["phase"])]} {PHASE_NAMES[int(r["phase"])]}</small></span>'
+            f'<span class="v"><b>{corr}</b></span><span class="v">{_pct_html(r["ret"])}</span>'
+            f'<span class="v">{_pct_html(r["vs"])}</span></div>')
+    head = ('<div class="qe-tr-row mem hd"><span></span><span class="t">Ticker · fase nu</span>'
+            '<span class="v">Gelijk</span><span class="v">Rend.</span><span class="v">Vs sector</span></div>')
+    more = f' · top {len(shown)} van {len(d)}' if len(shown) < len(d) else f' · {len(d)} tickers'
+    return (f'<div class="qe-panel"><div class="p-t">🎯 {SECTOR_ICON.get(name, "")} {_esc(name)}: volgt de trend{more}</div>'
+            f'{head}{"".join(rows)}</div>')
+
+
 def sector_turnarounds(trends: dict, lookback: int = 15) -> list:
     """Sectoren die kort geleden in Bodemfase zaten en nu omhoog komen (Herstel/Uptrend)."""
     res = []
@@ -4467,28 +4539,72 @@ def render_sector_trend_rank(trends: dict, days: int, selected: str = None) -> s
     return f'<div class="qe-panel"><div class="p-t">🌐 Sectoren op trend (sterkste 3M bovenaan)</div>{head}{"".join(rows)}</div>'
 
 
-def sector_trend_section(tickers) -> None:
-    """Haalt 1 jaar historie op (parallel), berekent de sector-trends en toont ze."""
-    tickers = tuple(dict.fromkeys(str(t) for t in tickers))
-    sig = (tickers, int(time.time() // 900))                       # 15 min hergebruik
-    memo = st.session_state.get('_sector_trend')
-    if not memo or memo.get('sig') != sig:
-        with st.spinner("Sectoren bepalen…"):
-            sm = sector_map(list(tickers))
-        prog = st.progress(0.0, text="Koershistorie laden…")
-        res = _parallel_map(lambda t: _fetch_history(t, TREND_PERIOD, 60), tickers,
-                            on_progress=lambda d, n: prog.progress(d / n, text=f"Koershistorie laden… {d}/{n}"))
+@st.cache_data(ttl=3600, max_entries=1500, show_spinner=False)
+def _trend_history(ticker: str) -> pd.DataFrame:
+    """1 jaar dagkoersen (alleen Open/Low/Close, licht). Gecachet 1 uur over sessies heen, zodat een
+    onderbroken laadbeurt (telefoon in de zak) de volgende keer gewoon verder gaat. Fout = niet gecachet."""
+    return _fetch_history(ticker, TREND_PERIOD, 60)[['Open', 'Low', 'Close']].astype('float32')
+
+
+def _load_trend_memo(tickers: tuple, big: bool) -> dict:
+    prog = st.progress(0.0, text="Koershistorie laden…")
+    hist, total, chunk = {}, len(tickers), 60
+    for i in range(0, total, chunk):
+        part = tickers[i:i + chunk]
+        res = _parallel_map(_trend_history, part, workers=MAIN_TABLE_WORKERS,
+                            on_progress=lambda d, n, i=i: prog.progress(
+                                min((i + d) / total, 1.0), text=f"Koershistorie laden… {min(i + d, total)}/{total} · {len(hist)} gelukt"))
+        hist.update({t: r for t, r in res.items() if isinstance(r, pd.DataFrame)})
+    try:
+        prog.empty()
+    except Exception:
+        pass
+    with st.spinner("Sectoren en trends berekenen…"):
+        sm = sector_map(list(hist), lookup=not big)               # grote pool: geen Yahoo-opzoeking per ticker
+        close_df, code_df = build_trend_panels(hist)
+        trends = trends_from_panels(close_df, code_df, sm)
+    return {'sig': tickers, 'trends': trends, 'close': close_df, 'codes': code_df, 'ok': len(hist), 'all': total,
+            'nosec': sum(1 for t in hist if sm.get(t, 'Onbekend') == 'Onbekend'), 'ts': time.time()}
+
+
+def sector_trend_section(own_tickers) -> None:
+    """Sector-trend over 1 jaar historie, met de tickers per sector die de trend het best volgen.
+    Bron: eigen Markt-lijst (laadt direct) of de grote pool (laadt op verzoek; duurt een paar minuten)."""
+    try:
+        src = st.pills("Bron", ["Mijn lijst", "Grote pool"], default="Mijn lijst", key="trend_src",
+                       label_visibility="collapsed")
+    except Exception:
+        src = st.radio("Bron", ["Mijn lijst", "Grote pool"], horizontal=True, key="trend_src_r",
+                       label_visibility="collapsed")
+    big = (src == "Grote pool")
+    memos = st.session_state.setdefault('_sector_trends', {})
+    if big:
         try:
-            prog.empty()
-        except Exception:
-            pass
-        hist = {t: r for t, r in res.items() if isinstance(r, pd.DataFrame)}
-        memo = {'sig': sig, 'trends': compute_sector_trends(hist, sm), 'ok': len(hist), 'all': len(tickers)}
-        st.session_state['_sector_trend'] = memo
+            tickers = tuple(get_large_ticker_pool()[0])
+        except Exception as e:
+            st.warning(f"Grote pool kon niet worden geladen: {e}")
+            return
+    else:
+        tickers = tuple(dict.fromkeys(str(t) for t in own_tickers))
+    memo = memos.get(src)
+    if memo and (memo['sig'] != tickers or (not big and time.time() - memo['ts'] > 900)):
+        memo = None
+    if memo is None:
+        if big:
+            st.markdown(f'<div class="qe-hint">🌐 {len(tickers)} tickers · laden duurt ongeveer {max(1, round(len(tickers) / 6 * 0.5 / 60))}–'
+                        f'{max(2, round(len(tickers) / 6 * 1.0 / 60))} minuten. Houd de app open; onderbroken? Tik opnieuw, '
+                        f'dan gaat hij verder waar hij was.</div>', unsafe_allow_html=True)
+            if not st.button("▶ Laad sector-trend voor de grote pool", key="btn_trend_big", type="primary"):
+                return
+        memo = _load_trend_memo(tickers, big)
+        memos[src] = memo
     trends = memo['trends']
     if not trends:
         st.warning("Geen sector-historie beschikbaar (Yahoo gaf geen koersdata). Probeer het over een minuut opnieuw.")
         return
+    if big and st.button("↻ Opnieuw laden", key="btn_trend_reload"):
+        memos.pop(src, None)
+        st.rerun()
 
     try:
         per = st.pills("Periode", list(TREND_WINDOWS), default="6M", key="trend_period", label_visibility="collapsed")
@@ -4503,10 +4619,10 @@ def sector_trend_section(tickers) -> None:
                     ' · '.join(f'<b>{SECTOR_ICON.get(s, "")} {_esc(s)}</b>' for s in turn) + '</div>',
                     unsafe_allow_html=True)
 
+    r3 = lambda s: (-999 if pd.isna(trends[s]['ret'].get('3M')) else trends[s]['ret']['3M'])
     names = sorted(trends, key=lambda s: -trends[s]['n'])
-    cur = st.session_state.get('trend_sector')
-    if cur not in names:
-        st.session_state['trend_sector'] = max(names, key=lambda s: (trends[s]['ret'].get('3M') or -999))
+    if st.session_state.get('trend_sector') not in names:
+        st.session_state['trend_sector'] = max(names, key=r3)
     try:
         sel = st.pills("Sector", names, key="trend_sector", label_visibility="collapsed")
     except Exception:
@@ -4514,9 +4630,24 @@ def sector_trend_section(tickers) -> None:
     sel = sel if sel in trends else names[0]
 
     st.markdown(render_sector_trend_card(sel, trends[sel], days), unsafe_allow_html=True)
+
+    mem = sector_members(memo['close'], memo['codes'], trends[sel]['tickers'], trends[sel]['index'], days)
+    if not mem.empty:
+        try:
+            srt = st.pills("Sorteer", list(TREND_SORTS), default="Trend-score", key="trend_sort",
+                           label_visibility="collapsed")
+        except Exception:
+            srt = st.radio("Sorteer", list(TREND_SORTS), horizontal=True, key="trend_sort_r",
+                           label_visibility="collapsed")
+        show_all = st.toggle("Toon alle tickers van deze sector", key="trend_all") if len(mem) > 10 else False
+        st.markdown(render_sector_members(mem, sel, TREND_SORTS.get(srt or "Trend-score", "score"),
+                                          0 if show_all else 10), unsafe_allow_html=True)
+
     st.markdown(render_sector_trend_rank(trends, days, sel), unsafe_allow_html=True)
-    st.caption(f"Gelijk gewogen index van {memo['ok']} van {memo['all']} tickers uit je Markt-lijst. "
-               "Fases volgens de scanner-regels op dagdata; Vroeg Herstel is benaderd (groene kaars die de rode dag ervoor terugwint).")
+    extra = f" · {memo['nosec']} zonder bekende sector overgeslagen" if memo.get('nosec') else ""
+    st.caption(f"Gelijk gewogen index van {memo['ok']} van {memo['all']} tickers{extra}. Fases volgens de scanner-regels op "
+               "dagdata; Vroeg Herstel is benaderd (groene kaars die de rode dag ervoor terugwint). "
+               "Gelijkloop = correlatie van het dagrendement met de rest van de sector; Trend-score = 50% gelijkloop + 50% rendement-rang.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -4669,8 +4800,8 @@ with main_tabs[0]:
 
         # ── Sector-trend (historie) ───────────────────────────────────────────
         if st.toggle("🌐 Sector-trend (historie)", key="show_sector_trend",
-                     help="Trend per sector over de laatste maanden, met de scanner-fases (Bodem, Herstel, Uptrend) "
-                          "ingetekend op het verloop. Laadt 1 jaar koershistorie."):
+                     help="Trend per sector over de laatste maanden met de scanner-fases ingetekend, plus de tickers die de "
+                          "sectortrend het best volgen. Bron: je eigen lijst of de grote pool (laadt op verzoek)."):
             sector_trend_section(main_df['Ticker'].tolist())
 
         # ── Filter · zoek · sorteer ───────────────────────────────────────────
