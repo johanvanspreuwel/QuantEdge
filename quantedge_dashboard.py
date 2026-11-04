@@ -229,13 +229,13 @@ st.markdown("""
   button[kind="pillsActive"] { background: rgba(240,185,11,.16) !important; border-color: var(--gold) !important; color: var(--gold) !important; }
 
   /* ── Tabs: horizontaal scrollbaar, grote tikvlakken ────────────────────── */
-  .stTabs [data-baseweb="tab-list"] { background-color: var(--bg-secondary); border-bottom: 2px solid var(--gold);
+  [data-baseweb="tab-list"] { background-color: var(--bg-secondary); border-bottom: 2px solid var(--gold);
       overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; gap: 2px; border-radius: 10px 10px 0 0; }
-  .stTabs [data-baseweb="tab-list"]::-webkit-scrollbar { display: none; }
-  .stTabs [data-baseweb="tab"] { color: var(--text-muted) !important; font-family: 'JetBrains Mono', monospace;
+  [data-baseweb="tab-list"]::-webkit-scrollbar { display: none; }
+  [data-baseweb="tab"] { background: transparent !important; color: var(--text-muted) !important; font-family: 'Inter', sans-serif; font-weight: 600;
       white-space: nowrap; min-height: 46px; padding: 0 16px; font-size: .85rem; }
-  .stTabs [aria-selected="true"] { color: var(--gold) !important; }
-  .stTabs [data-baseweb="tab-highlight"] { background-color: var(--gold) !important; }
+  [data-baseweb="tab"][aria-selected="true"] { color: var(--gold) !important; }
+  [data-baseweb="tab-highlight"] { background-color: var(--gold) !important; }
 
   .stDataFrame { border: 1px solid var(--border) !important; border-radius: 10px; overflow: hidden; }
 
@@ -269,6 +269,8 @@ st.markdown("""
     font-family: 'JetBrains Mono', monospace; font-size: .78rem; color: var(--text-muted);
   }
   .header-bar .hb-brand { color: var(--gold); font-weight: 700; letter-spacing: 1px; font-size: .95rem; }
+  .header-bar .hb-logo { display:inline-block; width:12px; height:12px; margin-right:9px; border-radius:3px; transform: rotate(45deg) scale(.85);
+                         background: linear-gradient(135deg, var(--gold), #B88A00); box-shadow: 0 0 10px rgba(240,185,11,.55); vertical-align: -1px; }
   .header-bar .hb-time  { color: var(--green); }
   .header-bar .hb-dot   { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--green);
                           margin-right:6px; animation: qe-pulse 2s ease-in-out infinite; }
@@ -388,7 +390,7 @@ st.markdown("""
     .qe-kpi .k-v { font-size: 1.15rem; word-break: break-word; }
     .qe-kpi .k-v { font-size: 1.35rem; }
     .header-bar .hb-long { display: none; }
-    .stTabs [data-baseweb="tab"] { padding: 0 12px; font-size: .8rem; }
+    [data-baseweb="tab"] { padding: 0 12px; font-size: .8rem; }
     [data-testid="stMetric"] { padding: 8px 10px; }
     [data-testid="stMetricValue"] { font-size: 1.3rem !important; }
     .stButton > button { width: 100%; }
@@ -396,21 +398,21 @@ st.markdown("""
   @media (max-width: 640px) {
     /* Hoofdtabs als onderbalk, zoals een echte app (verneste tabs in expanders blijven normaal) */
     .block-container { padding-bottom: calc(6.5rem + env(safe-area-inset-bottom)) !important; }
-    .stTabs [data-baseweb="tab-list"] {
+    [data-baseweb="tab-list"] {
       position: fixed; left: 0; right: 0; bottom: 0; z-index: 999; width: 100%;
       background: rgba(15,18,23,.94); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
       border-top: 1px solid var(--border); border-bottom: 0; border-radius: 0; gap: 0;
       padding: 0 64px calc(2px + env(safe-area-inset-bottom)) 4px; justify-content: space-around;
     }
-    .stTabs [data-baseweb="tab"] { flex: 1 1 0; min-width: 0; justify-content: center; padding: 0 2px !important; font-size: .68rem !important; min-height: 54px; }
-    .stTabs [data-baseweb="tab"] p { font-size: .68rem !important; }
-    .stTabs [data-baseweb="tab-highlight"] { top: 0 !important; bottom: auto !important; height: 3px !important; border-radius: 0 0 3px 3px; }
-    .stTabs [data-baseweb="tab-border"] { display: none; }
-    [data-testid="stExpander"] .stTabs [data-baseweb="tab-list"] {
+    [data-baseweb="tab"] { flex: 1 1 0; min-width: 0; justify-content: center; padding: 0 2px !important; font-size: .68rem !important; min-height: 54px; }
+    [data-baseweb="tab"] p { font-size: .68rem !important; }
+    [data-baseweb="tab-highlight"] { top: 0 !important; bottom: auto !important; height: 3px !important; border-radius: 0 0 3px 3px; }
+    [data-baseweb="tab-border"] { display: none; }
+    [data-testid="stExpander"] [data-baseweb="tab-list"] {
       position: static; background: var(--bg-secondary); backdrop-filter: none; border-top: 0;
       border-bottom: 1px solid var(--border); padding: 0; justify-content: flex-start; overflow-x: auto; }
-    [data-testid="stExpander"] .stTabs [data-baseweb="tab"] { flex: 0 0 auto; min-height: 44px; padding: 0 12px !important; }
-    [data-testid="stExpander"] .stTabs [data-baseweb="tab-highlight"] { top: auto !important; bottom: 0 !important; }
+    [data-testid="stExpander"] [data-baseweb="tab"] { flex: 0 0 auto; min-height: 44px; padding: 0 12px !important; }
+    [data-testid="stExpander"] [data-baseweb="tab-highlight"] { top: auto !important; bottom: 0 !important; }
   }
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation: none !important; transition: none !important; }
@@ -438,7 +440,7 @@ _n = _now_nl()
 now_str = f"{_DAGEN[_n.weekday()][:2]} {_n.day} {_MAANDEN[_n.month - 1]} · {_n:%H:%M}"
 st.markdown(f"""
 <div class="header-bar">
-  <span class="hb-brand">⬛ QUANTEDGE</span>
+  <span class="hb-brand"><span class="hb-logo"></span>QUANTEDGE</span>
   <span class="hb-long">QUANTITATIVE TRADING DASHBOARD · yfinance · MULTI-TF</span>
   <span class="hb-time"><span class="hb-dot"></span>{now_str}</span>
 </div>
