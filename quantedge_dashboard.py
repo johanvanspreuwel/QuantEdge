@@ -3570,6 +3570,138 @@ def render_alpha_cards(df: pd.DataFrame) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# COMBI-SCAN — resultaten van meerdere scanners samenvoegen (samenloop)
+#   Hoe meer onafhankelijke scanners dezelfde ticker vinden, hoe sterker het signaal.
+# ─────────────────────────────────────────────────────────────────────────────
+COMBO_LABELS = {
+    'alpha_scanner':      "🔎 Alpha",
+    'sr_bounce':          "🧱 S/R Bounce",
+    'mean_reversion':     "🎯 Mean Rev.",
+    'vol_squeeze':        "⚡ Squeeze",
+    'momentum_train':     "🚂 Momentum",
+    'bb_momentum':        "📊 BB Mom.",
+    'event_sentiment':    "📰 Event",
+    'momentum_low_float': "🔥 Low Float",
+}
+COMBO_BODEM    = {'alpha_scanner', 'sr_bounce', 'mean_reversion'}            # bodem / bounce
+COMBO_UITBRAAK = {'vol_squeeze', 'momentum_train', 'bb_momentum'}            # trend / uitbraak
+COMBO_PRESETS = {
+    "🌱 Bodem-bevestiging": ['alpha_scanner', 'sr_bounce', 'mean_reversion'],
+    "🚀 Uitbraak":          ['vol_squeeze', 'momentum_train', 'bb_momentum'],
+    "🧩 Alles (snel)":      ['alpha_scanner', 'sr_bounce', 'mean_reversion',
+                             'vol_squeeze', 'momentum_train', 'bb_momentum'],
+}
+COMBO_SLOW = {'event_sentiment', 'momentum_low_float'}   # halen extra data per ticker op
+
+
+def combo_merge(dfs: dict) -> pd.DataFrame:
+    """Voeg de scanner-resultaten samen tot één rij per ticker."""
+    rows = {}
+    for key, df in dfs.items():
+        if df is None or df.empty:
+            continue
+        for _, r in df.iterrows():
+            rsi = _num(r.get('RSI (14D)'))
+            # Mean Reversion geeft ook overbought-hits; in een samenloop tellen alleen oversold mee
+            if key == 'mean_reversion' and not np.isnan(rsi) and rsi >= 50:
+                continue
+            t = str(r['Ticker'])
+            d = rows.setdefault(t, {'hits': [], 'px': np.nan, 'rsi': np.nan, 'rr': np.nan,
+                                    'mtf': [], 'trend': '–'})
+            if key not in d['hits']:
+                d['hits'].append(key)
+            d['mtf'].append(str(r.get('MTF Status', '')))
+            if np.isnan(d['px']):
+                d['px'] = _num(r.get('Koers'))
+            if np.isnan(d['rsi']):
+                d['rsi'] = rsi
+            rr = _num(r.get('R:R'))
+            if not np.isnan(rr) and (np.isnan(d['rr']) or rr > d['rr']):
+                d['rr'] = rr
+            tr = str(r.get('1W Trend', '–'))
+            if d['trend'] in ('–', '', 'nan') and tr not in ('', 'nan'):
+                d['trend'] = tr
+    out = []
+    for t, d in rows.items():
+        approved = sum(1 for m in d['mtf'] if m == 'APPROVED')
+        best = 'APPROVED' if approved else ('WATCH' if 'WATCH' in d['mtf'] else 'REJECTED')
+        hset = set(d['hits'])
+        out.append({
+            'Ticker': t, 'Scanners': len(d['hits']),
+            'Gevonden door': " · ".join(COMBO_LABELS.get(h, h) for h in d['hits']),
+            'APPROVED': approved, 'MTF': best,
+            'Koers': d['px'], 'RSI': d['rsi'], 'R:R': d['rr'], '1W Trend': d['trend'],
+            '_bodem': bool(hset & COMBO_BODEM), '_uitbraak': bool(hset & COMBO_UITBRAAK),
+            '_symbol': _currency_symbol(t),
+        })
+    df = pd.DataFrame(out)
+    if not df.empty:
+        df = df.sort_values(['Scanners', 'APPROVED', 'R:R'], ascending=[False, False, False],
+                            na_position='last').reset_index(drop=True)
+    return df
+
+
+COMBO_FILTERS = ["Alles", "≥2 scanners", "≥3 scanners", "✅ APPROVED", "🌱 Bodem", "🚀 Uitbraak"]
+COMBO_SORTS   = ["Meeste scanners", "RSI laag → hoog", "R:R hoog → laag", "A → Z"]
+
+
+def combo_filter_sort(df: pd.DataFrame, flt: str, query: str, sort: str) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+    out = df
+    if flt == "≥2 scanners":
+        out = out[out['Scanners'] >= 2]
+    elif flt == "≥3 scanners":
+        out = out[out['Scanners'] >= 3]
+    elif flt == "✅ APPROVED":
+        out = out[out['MTF'] == 'APPROVED']
+    elif flt == "🌱 Bodem":
+        out = out[out['_bodem']]
+    elif flt == "🚀 Uitbraak":
+        out = out[out['_uitbraak']]
+    terms = [t for t in re.split(r'[\s,;]+', (query or '').upper()) if t]
+    if terms:
+        out = out[out['Ticker'].str.upper().apply(lambda tk: any(t in tk for t in terms))]
+    if sort == "RSI laag → hoog":
+        out = out.sort_values('RSI', ascending=True, na_position='last')
+    elif sort == "R:R hoog → laag":
+        out = out.sort_values('R:R', ascending=False, na_position='last')
+    elif sort == "A → Z":
+        out = out.sort_values('Ticker')
+    return out
+
+
+def render_combo_cards(df: pd.DataFrame) -> str:
+    if df is None or df.empty:
+        return '<div class="qe-empty">Geen tickers voor dit filter.</div>'
+    parts = ['<div class="qe-list">']
+    for _, r in df.iterrows():
+        n = int(r['Scanners'])
+        tone = 't-g' if n >= 3 else 't-y' if n == 2 else ''
+        sym = r['_symbol']
+        px = '–' if pd.isna(r['Koers']) else f"{sym}{r['Koers']:,.2f}"
+        mtf_cls = {'APPROVED': 'g', 'WATCH': 'y', 'REJECTED': 'r'}.get(r['MTF'], '')
+        body = (
+            _field('Gevonden door', r['Gevonden door'], True)
+            + _field('R:R', '–' if pd.isna(r['R:R']) else f"{r['R:R']:.2f}")
+            + _field('1W trend', r['1W Trend'])
+            + _field('MTF-oordelen APPROVED', f"{int(r['APPROVED'])} van {n}")
+        )
+        rsi_txt = '–' if pd.isna(r['RSI']) else f"{r['RSI']:.0f}"
+        parts.append(
+            f'<details class="qe-card {tone}"><summary>'
+            f'<div class="qe-r1"><span class="qe-tk">{_esc(str(r["Ticker"]))}</span><span class="qe-px">{_esc(px)}</span></div>'
+            f'<div class="qe-r2"><div class="qe-chips">'
+            f'<span class="qe-act {mtf_cls}">{_esc(str(r["MTF"]))}</span>'
+            f'<span class="qe-chip {"g" if n >= 3 else "y" if n == 2 else ""}">🎯 <b>{n}×</b></span>'
+            f'<span class="qe-chip">RSI <b>{_esc(rsi_txt)}</b></span>'
+            f'</div></div></summary><div class="qe-body">{body}</div></details>'
+        )
+    parts.append('</div>')
+    return ''.join(parts)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # MAIN NAVIGATION  (Watchlist-tab verwijderd – functionaliteit in Tab 1)
 # ─────────────────────────────────────────────────────────────────────────────
 main_tabs = st.tabs([
@@ -3577,7 +3709,8 @@ main_tabs = st.tabs([
     "🔍 Multi-Strategie Scanner",
     "📈 Deep Dive & Grafiek",
     "📡 Live Monitor",
-    "🏆 Alpha Tracker"])
+    "🏆 Alpha Tracker",
+    "🎯 Combi-Scan"])
 
 # ═════════════════════════════════════════════════════════════════════════════
 # TAB 1: CORE MARKET TRACKER  (+ ingebouwde Watchlist)
@@ -4901,6 +5034,139 @@ with main_tabs[4]:
 - ⏳ **Afwachten** — niets van het bovenstaande
 
 Een snapshot draait alleen als je de app opent en op de knop tikt; de app draait niet op de achtergrond.
+Geen financieel advies.
+""")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# TAB 6: COMBI-SCAN
+# ═════════════════════════════════════════════════════════════════════════════
+with main_tabs[5]:
+    st.markdown("### 🎯 Combi-Scan")
+    st.caption("Draai meerdere scanners achter elkaar en zie welke tickers door meerdere tegelijk worden gevonden. "
+               "Meer scanners = sterker signaal.")
+
+    try:
+        preset = st.pills("Preset", list(COMBO_PRESETS.keys()), default="🌱 Bodem-bevestiging",
+                          key="combo_preset", label_visibility="collapsed")
+    except Exception:
+        preset = st.radio("Preset", list(COMBO_PRESETS.keys()), horizontal=True, key="combo_preset_r",
+                          label_visibility="collapsed")
+    preset = preset or "🌱 Bodem-bevestiging"
+    # Bij een nieuwe preset de scanner-keuze meeveranderen
+    if st.session_state.get('_combo_preset_prev') != preset:
+        st.session_state['combo_sel'] = list(COMBO_PRESETS[preset])
+        st.session_state['_combo_preset_prev'] = preset
+    sel = st.multiselect("Scanners", options=list(COMBO_LABELS.keys()), key="combo_sel",
+                         format_func=lambda k: COMBO_LABELS[k] + (" (traag)" if k in COMBO_SLOW else ""))
+    if any(k in COMBO_SLOW for k in sel):
+        st.warning("Event Sentiment en Low Float halen per ticker extra gegevens op en zijn veel trager "
+                   "(en gevoeliger voor Yahoo-limieten).")
+    combo_large = st.toggle("🌐 Grote pool", value=False, key="combo_use_large",
+                            help="Uit = jouw eigen tickers (snel). Aan = 1000+ tickers (langzaam).")
+
+    if st.button("▶ Combi-scan starten", key="btn_combo_run", disabled=not sel):
+        st.session_state['scan_running'] = True
+        try:
+            st.session_state['lm_active'] = False
+        except Exception:
+            pass
+        try:
+            _pool = load_ticker_pool(use_large_pool=combo_large)
+            _dfs, _t0 = {}, time.time()
+            _head = st.empty()
+            for _i, _k in enumerate(sel, 1):
+                _head.info(f"🔍 Scanner {_i}/{len(sel)}: **{COMBO_LABELS[_k]}** op {len(_pool)} tickers…")
+                _ph = st.empty()
+                with _ph.container():
+                    try:
+                        _dfs[_k] = run_scanner(_k, _pool)
+                    except Exception as _e:
+                        _dfs[_k] = pd.DataFrame()
+                        st.warning(f"{COMBO_LABELS[_k]} mislukte: {type(_e).__name__}")
+                _ph.empty()
+            _head.empty()
+            st.session_state['combo'] = {
+                'ts': _now_nl().strftime('%d-%m %H:%M'), 'pool': len(_pool), 'dfs': _dfs,
+                'secs': int(time.time() - _t0), 'merged': combo_merge(_dfs),
+            }
+        finally:
+            st.session_state['scan_running'] = False
+
+    combo = st.session_state.get('combo')
+    if combo:
+        merged = combo['merged']
+        per_scanner = " · ".join(f"{COMBO_LABELS[k]} {0 if d is None else len(d)}" for k, d in combo['dfs'].items())
+        st.caption(f"Laatste combi-scan {combo['ts']} · {combo['pool']} tickers · {combo['secs']}s · hits per scanner: {per_scanner}")
+
+        if merged.empty:
+            st.info("Geen enkele scanner vond hits.")
+        else:
+            st.markdown(render_kpis([
+                ("🎯 ≥3 scanners", int((merged['Scanners'] >= 3).sum()), 'g'),
+                ("🎯 ≥2 scanners", int((merged['Scanners'] >= 2).sum()), ''),
+                ("✅ APPROVED", int((merged['MTF'] == 'APPROVED').sum()), ''),
+                ("Totaal unieke tickers", len(merged), ''),
+            ]), unsafe_allow_html=True)
+
+            try:
+                c_flt = st.pills("Filter", COMBO_FILTERS, default="≥2 scanners", key="combo_filter",
+                                 label_visibility="collapsed")
+            except Exception:
+                c_flt = st.radio("Filter", COMBO_FILTERS, horizontal=True, key="combo_filter_r",
+                                 label_visibility="collapsed")
+            c_flt = c_flt or "Alles"
+            with st.container(key="qe_row_combo"):
+                _c1, _c2 = st.columns(2)
+                with _c1:
+                    c_q = st.text_input("Zoek", placeholder="🔎 Zoek ticker", key="combo_search",
+                                        label_visibility="collapsed")
+                with _c2:
+                    c_sort = st.selectbox("Sorteer", COMBO_SORTS, key="combo_sort", label_visibility="collapsed")
+
+            c_view = combo_filter_sort(merged, c_flt, c_q, c_sort)
+            if len(c_view) != len(merged):
+                st.caption(f"{len(c_view)} van {len(merged)} tickers getoond")
+
+            if st.session_state.get('mobile_view', False):
+                st.markdown(render_combo_cards(c_view), unsafe_allow_html=True)
+            elif c_view.empty:
+                st.info("Geen tickers voor dit filter.")
+            else:
+                st.dataframe(
+                    c_view[['Ticker', 'Scanners', 'Gevonden door', 'MTF', 'APPROVED', 'Koers', 'RSI', 'R:R', '1W Trend']],
+                    width='stretch', hide_index=True, height=min(640, 60 + 36 * len(c_view)),
+                    column_config={'Koers': st.column_config.NumberColumn(format="%.2f"),
+                                   'RSI':   st.column_config.NumberColumn(format="%.0f"),
+                                   'R:R':   st.column_config.NumberColumn(format="%.2f")})
+
+            st.markdown("---")
+            if not c_view.empty:
+                c_pick = st.selectbox("🔭 Ticker", c_view['Ticker'].tolist(), key="combo_pick")
+                with st.container(key="qe_row_combo2"):
+                    _q1, _q2 = st.columns(2)
+                    with _q1:
+                        if st.button("📈 Deep Dive", key="btn_combo_dive"):
+                            st.session_state.current_alpha = c_pick
+                            st.success(f"✅ {c_pick} geladen → ga naar '📈 Deep Dive & Grafiek'")
+                    with _q2:
+                        if st.button("📌 Live Monitor", key="btn_combo_pin"):
+                            if c_pick not in st.session_state['pinned_tickers']:
+                                st.session_state['pinned_tickers'].append(c_pick)
+                            st.success(f"📌 {c_pick} vastgezet in Live Monitor.")
+
+    with st.expander("ℹ️ Welke combinaties passen bij elkaar?", expanded=not combo):
+        st.markdown("""
+**🌱 Bodem-bevestiging** — Alpha (stabiliseert op support) + S/R Bounce (herstelkaars op support) + Mean Reversion
+(alleen de oversold-kant). Vinden ze dezelfde ticker, dan is de bodem op meerdere manieren bevestigd.
+
+**🚀 Uitbraak** — Volatiliteit Squeeze (energie opgebouwd) + Momentum Trein + BB Momentum (loopt langs de bovenband).
+Squeeze + een van de twee momentum-scanners is de klassieke "rust voor de uitbraak"-combinatie.
+
+**Niet combineren:** Alpha en Momentum Trein sluiten elkaar uit (RSI ≤ 45 tegenover RSI 50–70), dus die samen levert
+vrijwel nooit iets op. Event Sentiment past als extra bevestiging bij beide groepen, maar is traag. Low Float
+(Warrior) is een aparte hoek van de markt (kleine US-aandelen) en past zelden bij de rest.
+
 Geen financieel advies.
 """)
 
