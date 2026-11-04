@@ -3317,31 +3317,35 @@ def _alpha_local_path() -> str:
 
 
 def _alpha_gh():
-    """(token, repo, bestandsnaam) voor de historie; hergebruikt je bestaande GitHub-secrets."""
+    """(token, repo, bestandsnaam, branch). De historie gaat naar een APARTE branch, zodat
+    Streamlit Cloud je app niet bij elke snapshot opnieuw uitrolt."""
     token, repo, _ = _get_github_config()
-    fname = ALPHA_HISTORY_FILE
+    fname, branch = ALPHA_HISTORY_FILE, "quantedge-data"
     try:
-        fname = st.secrets.get("GITHUB_ALPHA_FILE", ALPHA_HISTORY_FILE)
+        fname  = st.secrets.get("GITHUB_ALPHA_FILE", ALPHA_HISTORY_FILE)
+        branch = st.secrets.get("GITHUB_ALPHA_BRANCH", branch)
     except Exception:
         pass
-    return token, repo, fname
+    return token, repo, fname, branch
+
+
+_ALPHA_NO_TOKEN = ("Geen GitHub-token ingesteld — historie blijft alleen in deze sessie. "
+                   "Voeg GITHUB_TOKEN en GITHUB_REPO toe onder Streamlit → Settings → Secrets.")
 
 
 def alpha_load_history() -> dict:
     empty = {'version': 1, 'snapshots': []}
-    token, repo, fname = _alpha_gh()
+    token, repo, fname, branch = _alpha_gh()
     if token and repo:
         try:
             url  = f"https://api.github.com/repos/{repo}/contents/{fname}"
             hdrs = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github.raw+json",
                     "X-GitHub-Api-Version": "2022-11-28"}
-            resp = requests.get(url, headers=hdrs, timeout=15)
+            resp = requests.get(url, headers=hdrs, params={"ref": branch}, timeout=15)
             if resp.status_code == 200:
                 data = json.loads(resp.text)
                 if isinstance(data.get('snapshots'), list):
                     return data
-            elif resp.status_code == 404:
-                pass                                     # nog geen historie op GitHub
         except Exception:
             pass
     try:
@@ -3354,35 +3358,48 @@ def alpha_load_history() -> dict:
     return empty
 
 
+def _alpha_ensure_branch(repo: str, branch: str, hdrs: dict) -> None:
+    """Maak de data-branch aan (vanaf de standaardbranch) als die nog niet bestaat."""
+    base = f"https://api.github.com/repos/{repo}"
+    if requests.get(f"{base}/git/ref/heads/{branch}", headers=hdrs, timeout=15).status_code == 200:
+        return
+    default = requests.get(base, headers=hdrs, timeout=15).json().get("default_branch", "main")
+    sha = requests.get(f"{base}/git/ref/heads/{default}", headers=hdrs, timeout=15).json()["object"]["sha"]
+    requests.post(f"{base}/git/refs", headers=hdrs, timeout=15,
+                  json={"ref": f"refs/heads/{branch}", "sha": sha})
+
+
 def alpha_save_history(hist: dict, message: str = "QuantEdge: alpha-snapshot") -> tuple:
-    """Slaat op naar GitHub én lokaal. Retourneert (ok, melding)."""
+    """Slaat op naar GitHub (data-branch) én lokaal. Retourneert (ok, melding)."""
     payload_txt = json.dumps(hist, separators=(',', ':'), ensure_ascii=False)
     try:
         with open(_alpha_local_path(), 'w', encoding='utf-8') as f:
             f.write(payload_txt)
     except Exception:
         pass
-    token, repo, fname = _alpha_gh()
+    token, repo, fname, branch = _alpha_gh()
     if not (token and repo):
-        return False, "Geen GitHub-token ingesteld — historie alleen lokaal bewaard (verdwijnt bij herstart van de app)"
+        return False, _ALPHA_NO_TOKEN
     try:
         import base64
-        url  = f"https://api.github.com/repos/{repo}/contents/{fname}"
         hdrs = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
                 "X-GitHub-Api-Version": "2022-11-28"}
+        _alpha_ensure_branch(repo, branch, hdrs)
+        url  = f"https://api.github.com/repos/{repo}/contents/{fname}"
         sha  = None
-        resp = requests.get(url, headers=hdrs, timeout=15)
+        resp = requests.get(url, headers=hdrs, params={"ref": branch}, timeout=15)
         if resp.status_code == 200:
             sha = resp.json().get("sha")
         elif resp.status_code == 401:
             return False, "GitHub-token ongeldig (401)"
-        body = {"message": message, "content": base64.b64encode(payload_txt.encode("utf-8")).decode("utf-8")}
+        body = {"message": message, "branch": branch,
+                "content": base64.b64encode(payload_txt.encode("utf-8")).decode("utf-8")}
         if sha:
             body["sha"] = sha
         resp = requests.put(url, headers=hdrs, json=body, timeout=20)
         if resp.status_code in (200, 201):
             return True, "OK"
-        return False, f"GitHub-fout {resp.status_code}"
+        return False, f"GitHub-fout {resp.status_code} (heeft de token schrijfrechten op 'Contents'?)"
     except Exception as e:
         return False, str(e)
 
