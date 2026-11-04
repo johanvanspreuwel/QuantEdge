@@ -342,6 +342,17 @@ st.markdown("""
   .qe-breadth .b-leg b { color: var(--text-primary); }
   .qe-breadth .b-mv { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 6px; }
   .qe-breadth .b-l { font-size: .65rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: .5px; width: 30px; }
+  .qe-grp { margin: 10px 0; }
+  .qe-grp > summary { list-style: none; cursor: pointer; display: flex; justify-content: space-between; align-items: center; gap: 8px;
+                      padding: 10px 4px 8px; min-height: 44px; }
+  .qe-grp > summary::-webkit-details-marker { display: none; }
+  .qe-grp > summary .g-n { font-weight: 700; font-size: .95rem; color: #F4F6F8; }
+  .qe-grp > summary .g-n::after { content: '▾'; margin-left: 8px; color: var(--text-muted); font-size: .8rem; }
+  .qe-grp:not([open]) > summary .g-n::after { content: '▸'; }
+  .qe-grp > summary .g-r { display: flex; gap: 6px; align-items: center; }
+  .qe-sec .t { font-family: 'Inter', sans-serif; font-weight: 600; color: #F4F6F8; font-size: .85rem; }
+  .qe-sec { grid-template-columns: 22px 1fr 1fr auto; }
+  .qe-sec .v b.up { color: var(--green); } .qe-sec .v b.dn { color: var(--red); }
   .qe-hint { font-size: .72rem; color: var(--text-muted); margin: 2px 0 8px; }
   .qe-dots { display: inline-flex; gap: 3px; }
   .qe-dots i { width: 9px; height: 9px; border-radius: 50%; background: var(--bg-card); border: 1px solid var(--border); }
@@ -3950,6 +3961,137 @@ def render_combo_cards(df: pd.DataFrame) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# SECTOREN — resultaten groeperen per sector
+#   • eigen tickers: ingebouwde lijst (direct, geen netwerk)
+#   • overige tickers (scanner-pool): Yahoo, 7 dagen gecachet; mislukt = "Onbekend"
+# ─────────────────────────────────────────────────────────────────────────────
+SECTOR_NL = {
+    'Technology': 'Technologie', 'Healthcare': 'Gezondheidszorg', 'Financial Services': 'Financieel',
+    'Consumer Cyclical': 'Consument cyclisch', 'Consumer Defensive': 'Consument defensief',
+    'Energy': 'Energie', 'Utilities': 'Nutsbedrijven', 'Industrials': 'Industrie',
+    'Basic Materials': 'Materialen', 'Real Estate': 'Vastgoed', 'Communication Services': 'Communicatie',
+}
+SECTOR_ICON = {
+    'Technologie': '💻', 'Gezondheidszorg': '🧬', 'Financieel': '🏦', 'Consument cyclisch': '🛍',
+    'Consument defensief': '🛒', 'Energie': '🛢', 'Nutsbedrijven': '⚡', 'Industrie': '🏭',
+    'Materialen': '⛏', 'Vastgoed': '🏢', 'Communicatie': '📡', 'ETF / Fonds': '📦', 'Onbekend': '❔',
+}
+_S = {
+    'Technologie': "NVDA ASML.AS MSFT AMD ARM SAP CSCO MU TRMB INTU CRWD PANW CRM HPQ ENPH SEDG RUN",
+    'Financieel': "ADYEN.AS COIN PYPL MA V JPM",
+    'Consument cyclisch': "TSLA AMZN NKE SBUX MCD LOW MC.PA",
+    'Consument defensief': "KR PG PEP KO COST UNA.AS AD.AS OR.PA COTY WMT.DE",
+    'Communicatie': "NFLX DIS CMCSA",
+    'Gezondheidszorg': "ZTS JNJ ABBV PFE MRNA ILMN BAYN.DE",
+    'Materialen': "FMC ALB NEM GOLD FCX",
+    'Industrie': "CAT WM LMT RTX FDX UPS EME MAERSK-B.CO RHM.DE ADP SITE GEV PLUG",
+    'Vastgoed': "O ESRT",
+    'ETF / Fonds': "GLD SLV USO XLE VDE",
+    'Energie': "SHELL.AS XOM CVX COP EOG OXY FANG DVN HES MRO APA EQT CTRA SHEL BP TTE MPC VLO PSX OKE KMI WMB MPLX SLB HAL BKR",
+    'Nutsbedrijven': "CEG VST NEE DUK SO D AEP ED PCG SRE EIX ETR FE AES XEL BEP",
+}
+SECTOR_SEED = {t: sec for sec, tickers in _S.items() for t in tickers.split()}
+
+
+@st.cache_data(ttl=7 * 86400, show_spinner=False)
+def _fetch_sector(ticker: str) -> str:
+    """Sector via Yahoo. Mislukt/onbekend = exception, zodat dat NIET wordt gecachet."""
+    info = yf.Ticker(ticker).info
+    sec = info.get('sector')
+    if sec:
+        return SECTOR_NL.get(sec, sec)
+    if str(info.get('quoteType', '')).upper() in ('ETF', 'MUTUALFUND'):
+        return 'ETF / Fonds'
+    raise ValueError("geen sector")
+
+
+def sector_map(tickers, max_lookups: int = 200) -> dict:
+    """{ticker: sectornaam}. Eigen lijst eerst; de rest via Yahoo (parallel, eenmalig per sessie)."""
+    out, todo = {}, []
+    miss = st.session_state.setdefault('_sector_miss', set())
+    for t in dict.fromkeys(str(x) for x in tickers):
+        if t in SECTOR_SEED:
+            out[t] = SECTOR_SEED[t]
+        elif t in miss:
+            out[t] = 'Onbekend'
+        else:
+            todo.append(t)
+    if todo:
+        def _w(t):
+            return _fetch_sector(t)
+        res = _parallel_map(_w, todo[:max_lookups], workers=4)
+        for t in todo:
+            r = res.get(t)
+            if isinstance(r, str):
+                out[t] = r
+            else:
+                out[t] = 'Onbekend'
+                miss.add(t)
+    return out
+
+
+def with_sector(df: pd.DataFrame) -> pd.DataFrame:
+    """Voegt een kolom 'Sector' toe (direct na 'Ticker')."""
+    if df is None or df.empty:
+        return df
+    sm = sector_map(df['Ticker'].tolist())
+    out = df.copy()
+    out.insert(list(out.columns).index('Ticker') + 1, 'Sector', out['Ticker'].map(sm).fillna('Onbekend'))
+    return out
+
+
+def _sector_order(df: pd.DataFrame) -> list:
+    """Sectoren van groot naar klein; 'Onbekend' onderaan."""
+    counts = df['Sector'].value_counts()
+    return sorted(counts.index, key=lambda s: (s == 'Onbekend', -counts[s], s))
+
+
+def sector_sorted(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty or 'Sector' not in df.columns:
+        return df
+    order = {s: i for i, s in enumerate(_sector_order(df))}
+    return df.assign(_sec_ord=df['Sector'].map(order)).sort_values('_sec_ord', kind='stable').drop(columns='_sec_ord')
+
+
+def render_sector_summary(df: pd.DataFrame, day_col: str = None, title: str = "Sector-overzicht") -> str:
+    """Balkjes per sector: aantal tickers (en gemiddelde dagverandering als day_col is opgegeven)."""
+    if df is None or df.empty or 'Sector' not in df.columns:
+        return ''
+    order = _sector_order(df)
+    mx = max(int((df['Sector'] == s).sum()) for s in order) or 1
+    rows = []
+    for s in order:
+        sub = df[df['Sector'] == s]
+        n = len(sub)
+        extra = ''
+        if day_col and day_col in sub.columns and sub[day_col].notna().any():
+            a = float(sub[day_col].mean())
+            extra = f' · <b class="{"up" if a >= 0 else "dn"}">{a:+.1f}%</b>'
+        rows.append(
+            f'<div class="qe-rank qe-sec"><span class="n">{SECTOR_ICON.get(s, "▫")}</span>'
+            f'<span class="t">{_esc(s)}</span><div class="bar"><i style="width:{n / mx * 100:.0f}%"></i></div>'
+            f'<span class="v">{n}{extra}</span></div>')
+    return f'<div class="qe-panel"><div class="p-t">🗂 {_esc(title)}</div>{"".join(rows)}</div>'
+
+
+def render_grouped_cards(df: pd.DataFrame, card_fn, day_col: str = None) -> str:
+    """Kaarten per sector, elk als inklapbare groep. card_fn(df) → '<div class="qe-list">…</div>'."""
+    if df is None or df.empty:
+        return card_fn(df)
+    parts = []
+    for s in _sector_order(df):
+        sub = df[df['Sector'] == s]
+        pill = ''
+        if day_col and day_col in sub.columns and sub[day_col].notna().any():
+            a = float(sub[day_col].mean())
+            pill = f'<span class="qe-pill {"up" if a >= 0 else "dn"}">{a:+.1f}%</span>'
+        parts.append(
+            f'<details class="qe-grp" open><summary><span class="g-n">{SECTOR_ICON.get(s, "▫")} {_esc(s)}</span>'
+            f'<span class="g-r"><span class="qe-chip">{len(sub)}</span>{pill}</span></summary>{card_fn(sub)}</details>')
+    return ''.join(parts)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # MAIN NAVIGATION  (Watchlist-tab verwijderd – functionaliteit in Tab 1)
 # ─────────────────────────────────────────────────────────────────────────────
 main_tabs = st.tabs([
@@ -4119,6 +4261,14 @@ with main_tabs[0]:
                                    "Uit: volledige tabel met intraday-kolommen (15M/5M).")
 
         view_df = filter_sort_main(main_df, flt, q, sort_by)
+        group_main = st.toggle("🗂 Groepeer per sector", key="group_main",
+                               help="Toont een sector-overzicht en groepeert de lijst per sector.")
+        if group_main and not view_df.empty:
+            with st.spinner("Sectoren bepalen…"):
+                view_df = with_sector(view_df)
+            st.markdown(render_sector_summary(view_df[view_df['_ok'] == True], '_day_chg'),   # noqa: E712
+                        unsafe_allow_html=True)
+            view_df = sector_sorted(view_df)
         if use_cards:
             st.markdown('<div class="qe-hint">👆 Tik op een kaart voor details: positie tussen support en weerstand, RSI-meter en patroon.</div>',
                         unsafe_allow_html=True)
@@ -4126,7 +4276,10 @@ with main_tabs[0]:
             st.caption(f"{len(view_df)} van {len(main_df)} tickers getoond")
 
         if use_cards:
-            st.markdown(render_ticker_cards(view_df), unsafe_allow_html=True)
+            if group_main and 'Sector' in view_df.columns:
+                st.markdown(render_grouped_cards(view_df, render_ticker_cards, '_day_chg'), unsafe_allow_html=True)
+            else:
+                st.markdown(render_ticker_cards(view_df), unsafe_allow_html=True)
         else:
             if view_df.empty:
                 st.info("Geen tickers voor dit filter.")
@@ -4465,7 +4618,21 @@ with main_tabs[1]:
             st.subheader(f"🎯 Gevonden Opportuniteiten ({len(df_scan)} tickers goedgekeurd)")
 
             scan_mobile = st.session_state.get('mobile_view', False)
-            if scan_mobile:
+            group_scan = st.toggle("🗂 Groepeer per sector", key="group_scan",
+                                   help="Sector-overzicht en resultaten per sector. Onbekende tickers worden eenmalig bij Yahoo opgezocht.")
+            if group_scan:
+                with st.spinner("Sectoren bepalen…"):
+                    df_scan_s = with_sector(df_scan)
+                st.markdown(render_sector_summary(df_scan_s), unsafe_allow_html=True)
+                _cols = (['Ticker', 'Sector', 'Koers', 'RSI (14D)', 'MTF Status', 'R:R'] if scan_mobile
+                         else list(df_scan_s.columns))
+                _cols = [c for c in _cols if c in df_scan_s.columns]
+                for _sec in _sector_order(df_scan_s):
+                    _sub = df_scan_s[df_scan_s['Sector'] == _sec]
+                    with st.expander(f"{SECTOR_ICON.get(_sec, '▫')} {_sec} · {len(_sub)}", expanded=True):
+                        st.dataframe(style_scanner_df(_sub[_cols].drop(columns=['Sector'], errors='ignore')),
+                                     width='stretch', hide_index=True)
+            elif scan_mobile:
                 scan_mobile_cols = ['Ticker', 'Koers', 'RSI (14D)', 'MTF Status', 'R:R']
                 scan_mobile_cols = [c for c in scan_mobile_cols if c in df_scan.columns]
                 st.dataframe(style_scanner_df(df_scan[scan_mobile_cols]), width='stretch')
@@ -5237,13 +5404,23 @@ with main_tabs[4]:
         elif a_flt == "🏆 Meerdere keren":
             view = view[view['Keer in top'] >= 2]
         view = alpha_sorted(view, a_sort)
+        group_alpha = st.toggle("🗂 Groepeer per sector", key="group_alpha")
+        if group_alpha and not view.empty:
+            with st.spinner("Sectoren bepalen…"):
+                view = with_sector(view)
+            st.markdown(render_sector_summary(view, 'Rend. sinds 1e keer %', "Sector-overzicht (gem. rendement sinds 1e keer)"),
+                        unsafe_allow_html=True)
+            view = sector_sorted(view)
 
         if st.session_state.get('mobile_view', False):
-            st.markdown(render_alpha_cards(view), unsafe_allow_html=True)
+            if group_alpha and 'Sector' in view.columns:
+                st.markdown(render_grouped_cards(view, render_alpha_cards, 'Rend. sinds 1e keer %'), unsafe_allow_html=True)
+            else:
+                st.markdown(render_alpha_cards(view), unsafe_allow_html=True)
         elif view.empty:
             st.info("Geen tickers voor dit filter.")
         else:
-            show_cols = ['Ticker', 'Status', 'Keer in top', 'Van snapshots', 'Gem. score', 'Beste score',
+            show_cols = ['Ticker'] + (['Sector'] if 'Sector' in view.columns else []) + ['Status', 'Keer in top', 'Van snapshots', 'Gem. score', 'Beste score',
                          'Eerste keer', 'Instapkoers', 'Koers nu', 'Rend. sinds 1e keer %',
                          'Rend. sinds laatst %', 'RSI laatst', 'RSI nu', 'Afw. support nu %']
             st.dataframe(view[show_cols], width='stretch', hide_index=True,
@@ -5393,18 +5570,27 @@ with main_tabs[5]:
                     c_sort = st.selectbox("Sorteer", COMBO_SORTS, key="combo_sort", label_visibility="collapsed")
 
             c_view = combo_filter_sort(merged, c_flt, c_q, c_sort)
+            group_combo = st.toggle("🗂 Groepeer per sector", key="group_combo")
+            if group_combo and not c_view.empty:
+                with st.spinner("Sectoren bepalen…"):
+                    c_view = with_sector(c_view)
+                st.markdown(render_sector_summary(c_view), unsafe_allow_html=True)
+                c_view = sector_sorted(c_view)
             if len(c_view) != len(merged):
                 st.caption(f"{len(c_view)} van {len(merged)} tickers getoond")
 
             st.markdown(render_combo_matrix(c_view, list(combo['dfs'].keys())), unsafe_allow_html=True)
 
             if st.session_state.get('mobile_view', False):
-                st.markdown(render_combo_cards(c_view), unsafe_allow_html=True)
+                if group_combo and 'Sector' in c_view.columns:
+                    st.markdown(render_grouped_cards(c_view, render_combo_cards), unsafe_allow_html=True)
+                else:
+                    st.markdown(render_combo_cards(c_view), unsafe_allow_html=True)
             elif c_view.empty:
                 st.info("Geen tickers voor dit filter.")
             else:
                 st.dataframe(
-                    c_view[['Ticker', 'Scanners', 'Gevonden door', 'MTF', 'APPROVED', 'Koers', 'RSI', 'R:R', '1W Trend']],
+                    c_view[['Ticker'] + (['Sector'] if 'Sector' in c_view.columns else []) + ['Scanners', 'Gevonden door', 'MTF', 'APPROVED', 'Koers', 'RSI', 'R:R', '1W Trend']],
                     width='stretch', hide_index=True, height=min(640, 60 + 36 * len(c_view)),
                     column_config={'Koers': st.column_config.NumberColumn(format="%.2f"),
                                    'RSI':   st.column_config.NumberColumn(format="%.0f"),
