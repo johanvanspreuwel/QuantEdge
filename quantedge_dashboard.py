@@ -291,6 +291,28 @@ st.markdown("""
   .qe-r2 { margin-top: 6px; }
   .qe-tk  { font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 1.05rem; color: var(--gold); }
   .qe-px  { font-family: 'JetBrains Mono', monospace; font-size: 1rem; color: var(--text-primary); text-align: right; }
+  .qe-r1 { gap: 10px; }
+  .qe-spark { flex: 0 0 auto; margin-left: auto; opacity: .95; }
+  .qe-card[open] { border-color: var(--gold-dim); box-shadow: 0 0 0 1px rgba(240,185,11,.15); }
+  .qe-gauge { position: relative; display: flex; height: 8px; border-radius: 6px; overflow: hidden; margin-top: 6px; }
+  .qe-gauge .z.g { background: rgba(0,200,83,.55); } .qe-gauge .z.n { background: #2B3139; } .qe-gauge .z.r { background: rgba(246,70,93,.55); }
+  .qe-gauge .m, .qe-range .m { position: absolute; top: -2px; width: 4px; height: 12px; margin-left: -2px; border-radius: 2px; background: #fff; box-shadow: 0 0 0 1px #0B0E11; }
+  .qe-range { position: relative; height: 8px; border-radius: 6px; margin-top: 6px; background: linear-gradient(90deg, rgba(0,200,83,.55), #2B3139 50%, rgba(246,70,93,.55)); }
+  .qe-gl { display: flex; justify-content: space-between; gap: 6px; font-size: .62rem; color: var(--text-muted); margin-top: 4px; }
+  .qe-gl span:nth-child(2) { color: var(--text-primary); font-weight: 600; }
+  .qe-breadth { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; margin: 4px 0 12px; }
+  .qe-breadth .b-top { display: flex; justify-content: space-between; font-family: 'JetBrains Mono', monospace; font-size: .85rem; margin-bottom: 8px; }
+  .qe-breadth .up { color: var(--green); } .qe-breadth .dn { color: var(--red); }
+  .qe-breadth .b-bar { display: flex; height: 10px; border-radius: 6px; overflow: hidden; background: var(--bg-card); }
+  .qe-breadth .b-leg { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 8px 0; font-size: .7rem; color: var(--text-muted); }
+  .qe-breadth .b-leg u { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; }
+  .qe-breadth .b-leg b { color: var(--text-primary); }
+  .qe-breadth .b-mv { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 6px; }
+  .qe-breadth .b-l { font-size: .65rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: .5px; width: 30px; }
+  .qe-hint { font-size: .72rem; color: var(--text-muted); margin: 2px 0 8px; }
+  .qe-dots { display: inline-flex; gap: 3px; }
+  .qe-dots i { width: 9px; height: 9px; border-radius: 50%; background: var(--bg-card); border: 1px solid var(--border); }
+  .qe-dots i.on { background: var(--gold); border-color: var(--gold); }
   .qe-ext { display: block; font-size: .68rem; color: var(--text-muted); }
   .qe-kpis.n6 .k-v { font-size: 1.1rem; }
   .qe-chg { font-family: 'JetBrains Mono', monospace; font-size: .8rem; font-weight: 600; color: var(--text-muted); }
@@ -1477,6 +1499,7 @@ def _fetch_daily_core(ticker: str, period: str) -> dict:
         'support': support_30, 'resistance': resistance_30,
         'deviation': deviation, 'pattern': pattern,
         'phase': phase, 'action': action, 'day_chg': day_chg,
+        'spark': [round(float(v), 2) for v in close.tail(30)],     # voor het mini-koersgrafiekje
     }
 
 
@@ -1496,6 +1519,7 @@ def _row_from_result(res: dict) -> dict:
             'Ticker': ticker, 'Koers': 'N/A', 'Dag %': 'N/A', 'RSI (14D)': 'N/A',
             'Support (30D)': 'N/A', 'Weerstand (30D)': 'N/A', 'Afwijking %': 'N/A',
             '_dev_float': np.nan, '_rsi_float': np.nan, '_ext_chg': np.nan, '_day_chg': np.nan,
+            '_sup': np.nan, '_res': np.nan, '_px': np.nan, '_spark': None,
             'Patroon (1D)': 'N/A',
             '15M [-1]': '–', '15M [0]': '–', '5M [-1]': '–', '5M [0]': '–',
             '15M MR Status': '–', '_mr15_dir': '',
@@ -1537,6 +1561,8 @@ def _row_from_result(res: dict) -> dict:
         '_rsi_float': 50.0 if rsi_is_nan else float(rsi_val),
         '_ext_chg': change_ext if (ext_price and market_phase in ('AFTER-HOURS', 'PRE-MARKET')) else None,
         '_day_chg': core['day_chg'],
+        '_sup': core['support'], '_res': core['resistance'], '_px': display_price,
+        '_spark': core.get('spark'),
         'Patroon (1D)': core['pattern'],
         '15M [-1]': '–', '15M [0]': '–', '5M [-1]': '–', '5M [0]': '–',
         '15M MR Status': '–', '_mr15_dir': '',
@@ -1554,7 +1580,7 @@ def _finalize_main_df(rows: list) -> pd.DataFrame:
                  '15M MR Status', 'Koers Status / Fase', 'Actie']:
         if _col in df_result.columns:
             df_result[_col] = df_result[_col].astype(str)
-    for _col in ('_ext_chg', '_day_chg', '_dev_float', '_rsi_float'):
+    for _col in ('_ext_chg', '_day_chg', '_dev_float', '_rsi_float', '_sup', '_res', '_px'):
         if _col in df_result.columns:
             df_result[_col] = pd.to_numeric(df_result[_col], errors='coerce')
     return df_result
@@ -1745,6 +1771,82 @@ def _px_html(koers) -> str:
     return f'{_esc(m.group(1))}<small class="qe-ext">{_esc(m.group(2))}</small>'
 
 
+def _spark_svg(vals, entry=None, w: int = 84, h: int = 26) -> str:
+    """Mini-koersgrafiek (inline SVG). Groen als de laatste koers ≥ de eerste, anders rood.
+    entry = optionele horizontale stippellijn (bijv. instapkoers)."""
+    try:
+        v = [float(x) for x in vals if x is not None and not (isinstance(x, float) and np.isnan(x))]
+    except TypeError:
+        return ''
+    if len(v) < 3:
+        return ''
+    lo, hi = min(v + ([entry] if entry else [])), max(v + ([entry] if entry else []))
+    span = (hi - lo) or 1.0
+    y = lambda val: round(h - 2 - (val - lo) / span * (h - 4), 1)
+    pts = ' '.join(f"{round(i * (w - 4) / (len(v) - 1) + 2, 1)},{y(val)}" for i, val in enumerate(v))
+    col = '#00C853' if v[-1] >= v[0] else '#F6465D'
+    line = (f'<line x1="0" x2="{w}" y1="{y(entry)}" y2="{y(entry)}" stroke="#F0B90B" '
+            f'stroke-width="1" stroke-dasharray="2 2" opacity=".8"/>') if entry else ''
+    return (f'<svg class="qe-spark" width="{w}" height="{h}" viewBox="0 0 {w} {h}">{line}'
+            f'<polyline points="{pts}" fill="none" stroke="{col}" stroke-width="1.6" '
+            f'stroke-linejoin="round" stroke-linecap="round"/>'
+            f'<circle cx="{round((w - 4) + 2, 1)}" cy="{y(v[-1])}" r="2" fill="{col}"/></svg>')
+
+
+def _field_html(label: str, inner_html: str, wide: bool = False) -> str:
+    return (f'<div class="{"wide" if wide else ""}"><div class="f-l">{_esc(label)}</div>'
+            f'<div class="f-v">{inner_html}</div></div>')
+
+
+def _rsi_gauge(rsi) -> str:
+    """RSI-balk 0–100 met groene (oversold) en rode (overbought) zone en een marker."""
+    if rsi is None or pd.isna(rsi):
+        return ''
+    g, r = TABLE_RSI_GREEN, 100 - TABLE_RSI_RED
+    return (f'<div class="qe-gauge"><i class="z g" style="width:{g}%"></i>'
+            f'<i class="z n" style="width:{100 - g - r}%"></i><i class="z r" style="width:{r}%"></i>'
+            f'<b class="m" style="left:{min(max(float(rsi), 0), 100):.0f}%"></b></div>'
+            f'<div class="qe-gl"><span>oversold</span><span>RSI {float(rsi):.0f}</span><span>overbought</span></div>')
+
+
+def _range_bar(px, sup, res, sym: str = '') -> str:
+    """Waar staat de koers tussen support en weerstand (30D)?"""
+    if any(v is None or pd.isna(v) for v in (px, sup, res)) or res <= sup:
+        return ''
+    pos = min(max((px - sup) / (res - sup) * 100, 0), 100)
+    return (f'<div class="qe-range"><b class="m" style="left:{pos:.0f}%"></b></div>'
+            f'<div class="qe-gl"><span>Support {sym}{sup:,.2f}</span><span>{pos:.0f}%</span>'
+            f'<span>Weerstand {sym}{res:,.2f}</span></div>')
+
+
+def render_breadth(df: pd.DataFrame) -> str:
+    """Marktoverzicht: stijgers/dalers, fase-verdeling en grootste bewegers."""
+    ok = df[df['_ok'] == True]                                               # noqa: E712
+    if ok.empty:
+        return ''
+    up, dn = int((ok['_day_chg'] > 0).sum()), int((ok['_day_chg'] < 0).sum())
+    avg = float(ok['_day_chg'].mean())
+    ph = ok['Koers Status / Fase']
+    segs = [
+        ('Bodem',        int(ph.str.contains('Bodemfase', na=False).sum()), '#00C853'),
+        ('Herstel',      int(ph.str.contains('Herstel', na=False).sum()),   '#69F0AE'),
+        ('Uptrend',      int(ph.str.contains('Uptrend', na=False).sum()),   '#F0B90B'),
+        ('Consolidatie', int(ph.str.contains('Consolidatie', na=False).sum()), '#4A5568'),
+    ]
+    tot = max(sum(n for _, n, _ in segs), 1)
+    bar = ''.join(f'<i style="width:{n / tot * 100:.1f}%;background:{c}"></i>' for _, n, c in segs if n)
+    legend = ''.join(f'<span><u style="background:{c}"></u>{_esc(lab)} <b>{n}</b></span>' for lab, n, c in segs)
+    srt = ok.sort_values('_day_chg', ascending=False)
+    mv = lambda part, cls: ''.join(
+        f'<span class="qe-chip {cls}">{_esc(str(t))} <b>{c:+.1f}%</b></span>'
+        for t, c in zip(part['Ticker'], part['_day_chg']))
+    return (f'<div class="qe-breadth"><div class="b-top"><span><b class="up">▲ {up}</b> / <b class="dn">▼ {dn}</b></span>'
+            f'<span class="{"up" if avg >= 0 else "dn"}">gem. {avg:+.2f}% vandaag</span></div>'
+            f'<div class="b-bar">{bar}</div><div class="b-leg">{legend}</div>'
+            f'<div class="b-mv"><span class="b-l">Top</span>{mv(srt.head(3), "g")}</div>'
+            f'<div class="b-mv"><span class="b-l">Flop</span>{mv(srt.tail(3).iloc[::-1], "r")}</div></div>')
+
+
 def render_ticker_cards(df: pd.DataFrame) -> str:
     """Compacte kaartenlijst. <details> klapt lokaal uit, dus zonder server-rerun."""
     if df is None or df.empty:
@@ -1770,13 +1872,16 @@ def render_ticker_cards(df: pd.DataFrame) -> str:
         dev_cls = 'g' if (pd.notna(dev_f) and dev_f < TABLE_DEV_GREEN) else 'y' if (pd.notna(dev_f) and dev_f > TABLE_DEV_GOLD) else ''
         act_cls = 'g' if 'KOOPWAARDIG' in action else 'r' if 'VOORZICHTIG' in action else 'y' if 'AANHOUDEN' in action else ''
         chg_cls = 'up' if (pd.notna(dc) and dc >= 0) else 'dn' if pd.notna(dc) else ''
+        sym     = _currency_symbol(str(r['Ticker']))
 
-        body = (
-            _field('Fase', phase, True)
-            + _field('Support (30D)', r.get('Support (30D)', '–'))
-            + _field('Weerstand (30D)', r.get('Weerstand (30D)', '–'))
-            + _field('Patroon (1D)', r.get('Patroon (1D)', '–'), True)
-        )
+        body = _field('Fase', phase, True)
+        _rb = _range_bar(r.get('_px'), r.get('_sup'), r.get('_res'), sym)
+        if _rb:
+            body += _field_html('Positie in 30D-bereik', _rb, True)
+        _rg = _rsi_gauge(rsi_f)
+        if _rg:
+            body += _field_html('RSI (14D)', _rg, True)
+        body += _field('Patroon (1D)', r.get('Patroon (1D)', '–'), True)
         mr = str(r.get('15M MR Status', '–'))
         if mr not in ('–', '', 'nan'):
             body += _field('15M Mean Reversion', mr, True)
@@ -1787,7 +1892,8 @@ def render_ticker_cards(df: pd.DataFrame) -> str:
 
         parts.append(
             f'<details class="qe-card {tone}"><summary>'
-            f'<div class="qe-r1"><span class="qe-tk">{tk}</span><span class="qe-px">{_px_html(r.get("Koers", ""))}</span></div>'
+            f'<div class="qe-r1"><span class="qe-tk">{tk}</span>{_spark_svg(r.get("_spark"))}'
+            f'<span class="qe-px">{_px_html(r.get("Koers", ""))}</span></div>'
             f'<div class="qe-r2"><div class="qe-chips">'
             f'<span class="qe-act {act_cls}">{_esc(action)}</span>'
             f'<span class="qe-chip {rsi_cls}">RSI <b>{_esc(str(r.get("RSI (14D)", "–")))}</b></span>'
@@ -3317,31 +3423,35 @@ def _alpha_local_path() -> str:
 
 
 def _alpha_gh():
-    """(token, repo, bestandsnaam) voor de historie; hergebruikt je bestaande GitHub-secrets."""
+    """(token, repo, bestandsnaam, branch). De historie gaat naar een APARTE branch, zodat
+    Streamlit Cloud je app niet bij elke snapshot opnieuw uitrolt."""
     token, repo, _ = _get_github_config()
-    fname = ALPHA_HISTORY_FILE
+    fname, branch = ALPHA_HISTORY_FILE, "quantedge-data"
     try:
-        fname = st.secrets.get("GITHUB_ALPHA_FILE", ALPHA_HISTORY_FILE)
+        fname  = st.secrets.get("GITHUB_ALPHA_FILE", ALPHA_HISTORY_FILE)
+        branch = st.secrets.get("GITHUB_ALPHA_BRANCH", branch)
     except Exception:
         pass
-    return token, repo, fname
+    return token, repo, fname, branch
+
+
+_ALPHA_NO_TOKEN = ("Geen GitHub-token ingesteld — historie blijft alleen in deze sessie. "
+                   "Voeg GITHUB_TOKEN en GITHUB_REPO toe onder Streamlit → Settings → Secrets.")
 
 
 def alpha_load_history() -> dict:
     empty = {'version': 1, 'snapshots': []}
-    token, repo, fname = _alpha_gh()
+    token, repo, fname, branch = _alpha_gh()
     if token and repo:
         try:
             url  = f"https://api.github.com/repos/{repo}/contents/{fname}"
             hdrs = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github.raw+json",
                     "X-GitHub-Api-Version": "2022-11-28"}
-            resp = requests.get(url, headers=hdrs, timeout=15)
+            resp = requests.get(url, headers=hdrs, params={"ref": branch}, timeout=15)
             if resp.status_code == 200:
                 data = json.loads(resp.text)
                 if isinstance(data.get('snapshots'), list):
                     return data
-            elif resp.status_code == 404:
-                pass                                     # nog geen historie op GitHub
         except Exception:
             pass
     try:
@@ -3354,35 +3464,48 @@ def alpha_load_history() -> dict:
     return empty
 
 
+def _alpha_ensure_branch(repo: str, branch: str, hdrs: dict) -> None:
+    """Maak de data-branch aan (vanaf de standaardbranch) als die nog niet bestaat."""
+    base = f"https://api.github.com/repos/{repo}"
+    if requests.get(f"{base}/git/ref/heads/{branch}", headers=hdrs, timeout=15).status_code == 200:
+        return
+    default = requests.get(base, headers=hdrs, timeout=15).json().get("default_branch", "main")
+    sha = requests.get(f"{base}/git/ref/heads/{default}", headers=hdrs, timeout=15).json()["object"]["sha"]
+    requests.post(f"{base}/git/refs", headers=hdrs, timeout=15,
+                  json={"ref": f"refs/heads/{branch}", "sha": sha})
+
+
 def alpha_save_history(hist: dict, message: str = "QuantEdge: alpha-snapshot") -> tuple:
-    """Slaat op naar GitHub én lokaal. Retourneert (ok, melding)."""
+    """Slaat op naar GitHub (data-branch) én lokaal. Retourneert (ok, melding)."""
     payload_txt = json.dumps(hist, separators=(',', ':'), ensure_ascii=False)
     try:
         with open(_alpha_local_path(), 'w', encoding='utf-8') as f:
             f.write(payload_txt)
     except Exception:
         pass
-    token, repo, fname = _alpha_gh()
+    token, repo, fname, branch = _alpha_gh()
     if not (token and repo):
-        return False, "Geen GitHub-token ingesteld — historie alleen lokaal bewaard (verdwijnt bij herstart van de app)"
+        return False, _ALPHA_NO_TOKEN
     try:
         import base64
-        url  = f"https://api.github.com/repos/{repo}/contents/{fname}"
         hdrs = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
                 "X-GitHub-Api-Version": "2022-11-28"}
+        _alpha_ensure_branch(repo, branch, hdrs)
+        url  = f"https://api.github.com/repos/{repo}/contents/{fname}"
         sha  = None
-        resp = requests.get(url, headers=hdrs, timeout=15)
+        resp = requests.get(url, headers=hdrs, params={"ref": branch}, timeout=15)
         if resp.status_code == 200:
             sha = resp.json().get("sha")
         elif resp.status_code == 401:
             return False, "GitHub-token ongeldig (401)"
-        body = {"message": message, "content": base64.b64encode(payload_txt.encode("utf-8")).decode("utf-8")}
+        body = {"message": message, "branch": branch,
+                "content": base64.b64encode(payload_txt.encode("utf-8")).decode("utf-8")}
         if sha:
             body["sha"] = sha
         resp = requests.put(url, headers=hdrs, json=body, timeout=20)
         if resp.status_code in (200, 201):
             return True, "OK"
-        return False, f"GitHub-fout {resp.status_code}"
+        return False, f"GitHub-fout {resp.status_code} (heeft de token schrijfrechten op 'Contents'?)"
     except Exception as e:
         return False, str(e)
 
@@ -3479,6 +3602,7 @@ def alpha_evaluate(hist: dict, cur: dict) -> pd.DataFrame:
             d['recs'].append((i, sn['ts'], it))
     rows = []
     n_snaps = len(snaps)
+    members = [{it['t'] for it in sn.get('top', [])} for sn in snaps]
     for t, d in seen.items():
         recs = d['recs']
         first_i, first_ts, first_it = recs[0]
@@ -3504,6 +3628,8 @@ def alpha_evaluate(hist: dict, cur: dict) -> pd.DataFrame:
             'Rend. sinds laatst %':  round((px_now / last_it['px'] - 1) * 100, 1) if core and last_it['px'] else np.nan,
             '_symbol': _currency_symbol(t),
             '_in_latest': last_i == n_snaps - 1,
+            '_spark': core.get('spark') if core else None,
+            '_dots': [t in m for m in members[-12:]],
         })
     df = pd.DataFrame(rows)
     if not df.empty:
@@ -3556,9 +3682,14 @@ def render_alpha_cards(df: pd.DataFrame) -> str:
             + _field('Gem. / beste score', f"{r['Gem. score']:.0f} / {r['Beste score']:.0f}")
             + _field('Consistentie', f"{int(r['Keer in top'])} van {int(r['Van snapshots'])} scans")
         )
+        _dots = r.get('_dots')
+        if isinstance(_dots, list) and _dots:
+            body += _field_html(f'In de top (laatste {len(_dots)} scans)',
+                                '<span class="qe-dots">' + ''.join(f'<i class="{"on" if x else ""}"></i>' for x in _dots) + '</span>', True)
         parts.append(
             f'<details class="qe-card {tone}"><summary>'
-            f'<div class="qe-r1"><span class="qe-tk">{_esc(str(r["Ticker"]))}</span><span class="qe-px">{_esc(px)}</span></div>'
+            f'<div class="qe-r1"><span class="qe-tk">{_esc(str(r["Ticker"]))}</span>'
+            f'{_spark_svg(r.get("_spark"), entry=r["Instapkoers"])}<span class="qe-px">{_esc(px)}</span></div>'
             f'<div class="qe-r2"><div class="qe-chips">'
             f'<span class="qe-act {act_cls}">{_esc(ALPHA_STATUS[key][0])}</span>'
             f'<span class="qe-chip">🏆 <b>{int(r["Keer in top"])}×</b></span>'
@@ -3632,6 +3763,7 @@ def combo_merge(dfs: dict) -> pd.DataFrame:
             'APPROVED': approved, 'MTF': best,
             'Koers': d['px'], 'RSI': d['rsi'], 'R:R': d['rr'], '1W Trend': d['trend'],
             '_bodem': bool(hset & COMBO_BODEM), '_uitbraak': bool(hset & COMBO_UITBRAAK),
+            '_hits': list(d['hits']),
             '_symbol': _currency_symbol(t),
         })
     df = pd.DataFrame(out)
@@ -3681,8 +3813,11 @@ def render_combo_cards(df: pd.DataFrame) -> str:
         sym = r['_symbol']
         px = '–' if pd.isna(r['Koers']) else f"{sym}{r['Koers']:,.2f}"
         mtf_cls = {'APPROVED': 'g', 'WATCH': 'y', 'REJECTED': 'r'}.get(r['MTF'], '')
+        _chips = ''.join(
+            f'<span class="qe-chip {"g" if h in COMBO_BODEM else "y" if h in COMBO_UITBRAAK else ""}">{_esc(COMBO_LABELS.get(h, h))}</span>'
+            for h in r['_hits'])
         body = (
-            _field('Gevonden door', r['Gevonden door'], True)
+            _field_html('Gevonden door', f'<div class="qe-chips">{_chips}</div>', True)
             + _field('R:R', '–' if pd.isna(r['R:R']) else f"{r['R:R']:.2f}")
             + _field('1W trend', r['1W Trend'])
             + _field('MTF-oordelen APPROVED', f"{int(r['APPROVED'])} van {n}")
@@ -3847,6 +3982,8 @@ with main_tabs[0]:
             ("🚀 Uptrend", n_uptrend, ''),   ("🌱 Vroeg herstel", n_herstel, ''),
         ]), unsafe_allow_html=True)
 
+        st.markdown(render_breadth(main_df), unsafe_allow_html=True)
+
         # ── Filter · zoek · sorteer ───────────────────────────────────────────
         try:
             flt = st.pills("Filter", MAIN_FILTERS, default="Alles", key="main_filter",
@@ -3869,6 +4006,9 @@ with main_tabs[0]:
                                    "Uit: volledige tabel met intraday-kolommen (15M/5M).")
 
         view_df = filter_sort_main(main_df, flt, q, sort_by)
+        if use_cards:
+            st.markdown('<div class="qe-hint">👆 Tik op een kaart voor details: positie tussen support en weerstand, RSI-meter en patroon.</div>',
+                        unsafe_allow_html=True)
         if len(view_df) != len(main_df):
             st.caption(f"{len(view_df)} van {len(main_df)} tickers getoond")
 
